@@ -30,7 +30,7 @@ const PLACE_SCORE = {
   3: 4,
 }
 
-const API_BASE = `http://${window.location.hostname}:5000`
+const API_BASE = 'https://new-winbirds.onrender.com'
 
 function App() {
   const [currentDate, setCurrentDate] = useState("")
