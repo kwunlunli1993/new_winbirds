@@ -670,11 +670,15 @@ def update_today_job():
     today = datetime.now().strftime("%Y-%m-%d")
     print(f"[Scheduler] Updating today: {today}")
     try:
-        # 強制刷新今天的資料並存入 R2
+        # 1. 強制刷新今天的原始賽事資料
         body = {"date": f"{today}T00:00:00+08:00"}
         call_winbird("/api/race/getRaces", json.dumps(body), force_live=True)
-        # 觸發一次 day-tags 計算，讓結果也存進 day/ cache
-        # （這裡直接呼叫內部邏輯會比較乾淨，但為了簡單直接用 requests 打自己也可以）
+
+        # 2. 呼叫自己的 /api/day-tags，重新計算並存入 R2
+        port = int(os.environ.get("PORT", 5000))
+        resp = requests.get(f"http://127.0.0.1:{port}/api/day-tags?date={today}", timeout=120)
+        print(f"[Scheduler] day-tags status: {resp.status_code}")
+
         print(f"[Scheduler] Done: {today}")
     except Exception as e:
         print(f"[Scheduler] Error: {e}")
@@ -687,4 +691,3 @@ atexit.register(lambda: scheduler.shutdown())
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
-    
