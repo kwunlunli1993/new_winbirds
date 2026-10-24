@@ -85,9 +85,9 @@ function App() {
   }, [currentDate])
 
   useEffect(() => {
-  loadRates('2509now')
-  loadAllCombos('2509now')
-}, [])
+    loadRates('2509now')
+    loadAllCombos('2509now')
+  }, [])
 
   const enableDragScroll = (ref) => {
     const el = ref.current
@@ -179,7 +179,7 @@ function App() {
 
   const getSortedStats = () => {
     if (!rates || !rates.stats) return []
-    const entries = Object.entries(rates.stats)
+    const entries = Object.entries(rates.stats).filter(([tag]) => !hiddenTags.has(tag))
     return entries.sort((a, b) => {
       const valA = a[1][sortBy] || 0
       const valB = b[1][sortBy] || 0
@@ -287,6 +287,7 @@ function App() {
     if (!race || !race.tags) return []
     const countMap = {}
     DEFAULT_TAGS.forEach(tag => {
+      if (hiddenTags.has(tag)) return
       (race.tags[tag] || []).forEach(h => {
         countMap[h.no] = (countMap[h.no] || 0) + 1
       })
@@ -300,6 +301,7 @@ function App() {
     if (!race || !race.tags || !allCombos || !allCombos.combos) return []
     const countMap = {}
     allCombos.combos.forEach(c => {
+      if (hiddenTags.has(c.tag1) || hiddenTags.has(c.tag2)) return
       const horses = getRaceComboHorses(race, c.tag1, c.tag2)
       horses.forEach(h => {
         countMap[h.no] = (countMap[h.no] || 0) + 1
@@ -555,6 +557,23 @@ function App() {
             {rates && (
               <div style={{ marginBottom: 32, paddingLeft: 12 }}>
                 <p style={{ textAlign: 'center' }}>統計期間：{rates.label}（{rates.start} ~ {rates.end}）</p>
+
+                <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900 }}>
+                  <strong>隱藏以下 Tags：</strong>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
+                    {DEFAULT_TAGS.map(tag => (
+                      <label key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
+                        <input 
+                          type="checkbox" 
+                          checked={hiddenTags.has(tag)} 
+                          onChange={() => toggleHidden(tag)} 
+                        />
+                        {tag}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
                 <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 12 }}>
                   <div>
                     <span style={{ marginRight: 8 }}>排序：</span>
