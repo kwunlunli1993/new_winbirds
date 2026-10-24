@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+api_cache/
+day_cache/
+rate_cache/
+dates_cache.json
+horse_history_cache.json
+race_dates_cache.json

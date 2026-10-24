@@ -9,12 +9,28 @@ import os
 import hashlib
 import time
 from itertools import combinations
+import boto3
+from botocore.exceptions import ClientError
 
 app = Flask(__name__)
 CORS(app)
 
 USER_ID = 619
 USER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJJRCI6NjE5LCJUeXBlIjoidXNlciJ9.rlJvhOIXu77DOucjNZAOFhR90vg29itBz4u7sZFJ8LE"
+
+# R2 設定（部署到 Render 時用環境變數）
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "2d6acff91f3e0f2f9d416e51f12ca41e")
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "ce2389fb251811c26346decdd9745dfb")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "9f74f0255877524c142e7f4f8a00fee08e0ca9720258ecc6c8afd5dea450b4f7")
+R2_BUCKET = os.environ.get("R2_BUCKET", "newwinbirds-cache")
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+    aws_access_key_id=R2_ACCESS_KEY,
+    aws_secret_access_key=R2_SECRET_KEY,
+    region_name="auto",
+)
 
 TARGET_TAGS = {
     "樂樂": "A類馬",
@@ -40,70 +56,54 @@ PERIODS = {
     "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
 }
 
-CACHE_DIR = "api_cache"
-RATE_CACHE_DIR = "rate_cache"
-DAY_CACHE_DIR = "day_cache"
-DATES_CACHE = "dates_cache.json"
-os.makedirs(CACHE_DIR, exist_ok=True)
-os.makedirs(RATE_CACHE_DIR, exist_ok=True)
-os.makedirs(DAY_CACHE_DIR, exist_ok=True)
-
 LIVE_TTL = 300
+
+def r2_exists(key):
+    try:
+        s3.head_object(Bucket=R2_BUCKET, Key=key)
+        return True
+    except ClientError:
+        return False
+
+def r2_load(key):
+    try:
+        obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
+        return json.loads(obj["Body"].read().decode("utf-8"))
+    except:
+        return None
+
+def r2_save(key, data):
+    try:
+        s3.put_object(
+            Bucket=R2_BUCKET,
+            Key=key,
+            Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as e:
+        print(f"R2 save error {key}: {e}")
 
 def get_cache_key(endpoint, body):
     raw = f"{endpoint}|{body}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 def load_from_cache(key):
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return None
-    return None
+    return r2_load(f"api/{key}.json")
 
 def save_to_cache(key, data):
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-
-def get_cache_age(key):
-    path = os.path.join(CACHE_DIR, f"{key}.json")
-    if os.path.exists(path):
-        return time.time() - os.path.getmtime(path)
-    return 999999
+    r2_save(f"api/{key}.json", data)
 
 def load_day_cache(date):
-    path = os.path.join(DAY_CACHE_DIR, f"{date}.json")
-    if os.path.exists(path):
-        try:
-            age = time.time() - os.path.getmtime(path)
-            if age < LIVE_TTL or not is_today(date):
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except:
-            pass
-    return None
+    return r2_load(f"day/{date}.json")
 
 def save_day_cache(date, data):
-    path = os.path.join(DAY_CACHE_DIR, f"{date}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    r2_save(f"day/{date}.json", data)
 
 def load_dates_cache():
-    if os.path.exists(DATES_CACHE):
-        try:
-            with open(DATES_CACHE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return None
+    return r2_load("dates_cache.json")
 
 def save_dates_cache(dates):
-    with open(DATES_CACHE, "w", encoding="utf-8") as f:
-        json.dump(dates, f, ensure_ascii=False)
+    r2_save("dates_cache.json", dates)
 
 def make_machine_header():
     now = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -122,11 +122,9 @@ def call_winbird(endpoint, body="{}", force_live=False):
     cache_key = get_cache_key(endpoint, body)
 
     if force_live:
-        age = get_cache_age(cache_key)
-        if age < LIVE_TTL:
-            cached = load_from_cache(cache_key)
-            if cached is not None:
-                return cached
+        cached = load_from_cache(cache_key)
+        if cached is not None:
+            return cached
         url = f"https://app.winbird.cc:16891{endpoint}"
         headers = {
             "Content-Type": "application/json",
@@ -139,7 +137,6 @@ def call_winbird(endpoint, body="{}", force_live=False):
             save_to_cache(cache_key, data)
             return data
         except:
-            cached = load_from_cache(cache_key)
             return cached if cached is not None else {}
 
     cached = load_from_cache(cache_key)
@@ -380,29 +377,27 @@ def day_tags():
 
 @app.route('/api/race-dates')
 def race_dates():
-    """日期列表也快取，不再每次掃描"""
     cached = load_dates_cache()
     if cached is not None:
         return jsonify(cached)
     
+    # 從 R2 掃描有賽事的日期（首次會較慢，之後會快取）
     dates = set()
-    
-    if os.path.exists(CACHE_DIR):
-        for filename in os.listdir(CACHE_DIR):
-            if not filename.endswith(".json"):
-                continue
-            path = os.path.join(CACHE_DIR, filename)
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                races = data.get("races")
-                if isinstance(races, list) and len(races) > 0:
-                    first = races[0]
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="api/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if not key.endswith(".json"):
+                    continue
+                data = r2_load(key)
+                if data and "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
+                    first = data["races"][0]
                     date_str = first.get("date", "")[:10]
-                    if date_str and date_str != "2026-10-24":
+                    if date_str:
                         dates.add(date_str)
-            except:
-                pass
+    except Exception as e:
+        print("scan dates error:", e)
     
     result = {"dates": sorted(list(dates), reverse=True)}
     save_dates_cache(result)
@@ -415,11 +410,11 @@ def tag_rates():
         period = '2509now'
     
     start_str, end_str, label = PERIODS[period]
-    cache_file = os.path.join(RATE_CACHE_DIR, f"rates_{period}.json")
+    cache_key = f"rate/rates_{period}.json"
     
-    if os.path.exists(cache_file):
-        with open(cache_file, "r", encoding="utf-8") as f:
-            return jsonify(json.load(f))
+    cached = r2_load(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     
     start_date = datetime.strptime(start_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_str, "%Y-%m-%d")
@@ -427,22 +422,23 @@ def tag_rates():
     stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
     
     dates = []
-    if os.path.exists(CACHE_DIR):
-        for filename in os.listdir(CACHE_DIR):
-            if filename.endswith(".json"):
-                path = os.path.join(CACHE_DIR, filename)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
-                        first_race = data["races"][0]
-                        date_str = first_race.get("date", "")[:10]
-                        if date_str:
-                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                            if start_date <= race_date <= end_date:
-                                dates.append(date_str)
-                except:
-                    pass
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="api/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if not key.endswith(".json"):
+                    continue
+                data = r2_load(key)
+                if data and "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
+                    first_race = data["races"][0]
+                    date_str = first_race.get("date", "")[:10]
+                    if date_str:
+                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if start_date <= race_date <= end_date:
+                            dates.append(date_str)
+    except:
+        pass
     
     dates = sorted(set(dates))
     
@@ -534,9 +530,7 @@ def tag_rates():
         "stats": result
     }
     
-    with open(cache_file, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False)
-    
+    r2_save(cache_key, output)
     return jsonify(output)
 
 @app.route('/api/all-combo-rates')
@@ -546,11 +540,11 @@ def all_combo_rates():
         period = '2509now'
     
     start_str, end_str, label = PERIODS[period]
-    cache_file = os.path.join(RATE_CACHE_DIR, f"all_combos_{period}.json")
+    cache_key = f"rate/all_combos_{period}.json"
     
-    if os.path.exists(cache_file):
-        with open(cache_file, "r", encoding="utf-8") as f:
-            return jsonify(json.load(f))
+    cached = r2_load(cache_key)
+    if cached is not None:
+        return jsonify(cached)
     
     start_date = datetime.strptime(start_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_str, "%Y-%m-%d")
@@ -558,22 +552,23 @@ def all_combo_rates():
     pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
     
     dates = []
-    if os.path.exists(CACHE_DIR):
-        for filename in os.listdir(CACHE_DIR):
-            if filename.endswith(".json"):
-                path = os.path.join(CACHE_DIR, filename)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
-                        first_race = data["races"][0]
-                        date_str = first_race.get("date", "")[:10]
-                        if date_str:
-                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                            if start_date <= race_date <= end_date:
-                                dates.append(date_str)
-                except:
-                    pass
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="api/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if not key.endswith(".json"):
+                    continue
+                data = r2_load(key)
+                if data and "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
+                    first_race = data["races"][0]
+                    date_str = first_race.get("date", "")[:10]
+                    if date_str:
+                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if start_date <= race_date <= end_date:
+                            dates.append(date_str)
+    except:
+        pass
     
     dates = sorted(set(dates))
     
@@ -666,9 +661,7 @@ def all_combo_rates():
         "combos": combos
     }
     
-    with open(cache_file, "w", encoding="utf-8") as f:
-        json.dump(output, f, ensure_ascii=False)
-    
+    r2_save(cache_key, output)
     return jsonify(output)
 
 if __name__ == '__main__':
