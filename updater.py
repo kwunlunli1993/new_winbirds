@@ -1,11 +1,16 @@
 import os
+import sys
 import time
 import requests
 import base64
 import json
+import hashlib
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
+
+# 強制即時輸出，避免 Logs 睇唔到
+sys.stdout.reconfigure(line_buffering=True)
 
 # 從環境變數讀取
 USER_ID = int(os.environ.get("USER_ID", 619))
@@ -50,30 +55,28 @@ def call_winbird(endpoint, body="{}", force_live=True):
             Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
         )
+        print(f"Cached {endpoint} -> {key}", flush=True)
         return data
     except Exception as e:
-        print(f"Error calling {endpoint}: {e}")
+        print(f"Error calling {endpoint}: {e}", flush=True)
         return {}
 
 def update_today():
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"[{datetime.now()}] Updating today: {today}")
+    print(f"[{datetime.now()}] Updating today: {today}", flush=True)
 
     body = {"date": f"{today}T00:00:00+08:00"}
     
     # 強制刷新今天的資料
     call_winbird("/api/race/getRaces", json.dumps(body), force_live=True)
-    
-    # 可選：再呼叫一次 day-tags 自己（如果你想預先計算好）
-    # 不過通常網站讀到時會自己計算，所以呢度可以唔使
 
-    print(f"[{datetime.now()}] Done updating {today}")
+    print(f"[{datetime.now()}] Done updating {today}", flush=True)
 
 if __name__ == "__main__":
-    print("Updater started. Will update every 5 minutes.")
+    print("Updater started. Will update every 5 minutes.", flush=True)
     while True:
         try:
             update_today()
         except Exception as e:
-            print(f"Update error: {e}")
+            print(f"Update error: {e}", flush=True)
         time.sleep(300)  # 5 分鐘
