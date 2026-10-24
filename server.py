@@ -124,9 +124,6 @@ def call_winbird(endpoint, body="{}", force_live=False):
     cache_key = get_cache_key(endpoint, body)
 
     if force_live:
-        cached = load_from_cache(cache_key)
-        if cached is not None:
-            return cached
         url = f"https://app.winbird.cc:16891{endpoint}"
         headers = {
             "Content-Type": "application/json",
@@ -139,6 +136,7 @@ def call_winbird(endpoint, body="{}", force_live=False):
             save_to_cache(cache_key, data)
             return data
         except:
+            cached = load_from_cache(cache_key)
             return cached if cached is not None else {}
 
     cached = load_from_cache(cache_key)
