@@ -84,6 +84,11 @@ function App() {
       .finally(() => setLoading(false))
   }, [currentDate])
 
+  useEffect(() => {
+  loadRates('2509now')
+  loadAllCombos('2509now')
+}, [])
+
   const enableDragScroll = (ref) => {
     const el = ref.current
     if (!el) return
