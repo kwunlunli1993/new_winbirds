@@ -11,8 +11,6 @@ import time
 from itertools import combinations
 import boto3
 from botocore.exceptions import ClientError
-from apscheduler.schedulers.background import BackgroundScheduler
-import atexit
 
 app = Flask(__name__)
 CORS(app)
@@ -662,29 +660,6 @@ def all_combo_rates():
     
     r2_save(cache_key, output)
     return jsonify(output)
-
-# ==================== 每 5 分鐘自動更新今天 ====================
-def update_today_job():
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"[Scheduler] Updating today: {today}")
-    try:
-        # 1. 強制刷新今天的原始賽事資料
-        body = {"date": f"{today}T00:00:00+08:00"}
-        call_winbird("/api/race/getRaces", json.dumps(body), force_live=True)
-
-        # 2. 呼叫自己的 /api/day-tags，重新計算並存入 R2
-        port = int(os.environ.get("PORT", 5000))
-        resp = requests.get(f"http://127.0.0.1:{port}/api/day-tags?date={today}", timeout=120)
-        print(f"[Scheduler] day-tags status: {resp.status_code}")
-
-        print(f"[Scheduler] Done: {today}")
-    except Exception as e:
-        print(f"[Scheduler] Error: {e}")
-
-scheduler = BackgroundScheduler()
-scheduler.add_job(update_today_job, "interval", minutes=5)
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
