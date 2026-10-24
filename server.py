@@ -11,6 +11,8 @@ import time
 from itertools import combinations
 import boto3
 from botocore.exceptions import ClientError
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
 
 app = Flask(__name__)
 CORS(app)
@@ -301,7 +303,7 @@ def day_tags():
     date = request.args.get('date', '2026-10-21')
     
     cached_result = load_day_cache(date)
-    if cached_result is not None:
+    if cached_result is not None and not is_today(date):
         return jsonify(cached_result)
     
     live = is_today(date)
@@ -381,7 +383,6 @@ def race_dates():
     if cached is not None:
         return jsonify(cached)
     
-    # 從 R2 掃描有賽事的日期（首次會較慢，之後會快取）
     dates = set()
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -663,6 +664,25 @@ def all_combo_rates():
     
     r2_save(cache_key, output)
     return jsonify(output)
+
+# ==================== 每 5 分鐘自動更新今天 ====================
+def update_today_job():
+    today = datetime.now().strftime("%Y-%m-%d")
+    print(f"[Scheduler] Updating today: {today}")
+    try:
+        # 強制刷新今天的資料並存入 R2
+        body = {"date": f"{today}T00:00:00+08:00"}
+        call_winbird("/api/race/getRaces", json.dumps(body), force_live=True)
+        # 觸發一次 day-tags 計算，讓結果也存進 day/ cache
+        # （這裡直接呼叫內部邏輯會比較乾淨，但為了簡單直接用 requests 打自己也可以）
+        print(f"[Scheduler] Done: {today}")
+    except Exception as e:
+        print(f"[Scheduler] Error: {e}")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(update_today_job, "interval", minutes=5)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
