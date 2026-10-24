@@ -5,12 +5,15 @@ import requests
 import base64
 import json
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import boto3
 from botocore.exceptions import ClientError
 
 # 強制即時輸出，避免 Logs 睇唔到
 sys.stdout.reconfigure(line_buffering=True)
+
+# 香港時區
+hk_tz = timezone(timedelta(hours=8))
 
 # 從環境變數讀取
 USER_ID = int(os.environ.get("USER_ID", 619))
@@ -62,15 +65,15 @@ def call_winbird(endpoint, body="{}", force_live=True):
         return {}
 
 def update_today():
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"[{datetime.now()}] Updating today: {today}", flush=True)
+    today = datetime.now(hk_tz).strftime("%Y-%m-%d")
+    print(f"[{datetime.now(hk_tz)}] Updating today: {today}", flush=True)
 
     body = {"date": f"{today}T00:00:00+08:00"}
     
     # 強制刷新今天的資料
     call_winbird("/api/race/getRaces", json.dumps(body), force_live=True)
 
-    print(f"[{datetime.now()}] Done updating {today}", flush=True)
+    print(f"[{datetime.now(hk_tz)}] Done updating {today}", flush=True)
 
 if __name__ == "__main__":
     print("Updater started. Will update every 5 minutes.", flush=True)
