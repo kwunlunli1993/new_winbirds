@@ -11,6 +11,7 @@ import time
 from itertools import combinations
 import boto3
 from botocore.exceptions import ClientError
+import threading
 
 app = Flask(__name__)
 CORS(app)
@@ -18,7 +19,6 @@ CORS(app)
 USER_ID = 619
 USER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJJRCI6NjE5LCJUeXBlIjoidXNlciJ9.rlJvhOIXu77DOucjNZAOFhR90vg29itBz4u7sZFJ8LE"
 
-# R2 設定（部署到 Render 時用環境變數）
 R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "2d6acff91f3e0f2f9d416e51f12ca41e")
 R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "ce2389fb251811c26346decdd9745dfb")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "9f74f0255877524c142e7f4f8a00fee08e0ca9720258ecc6c8afd5dea450b4f7")
@@ -55,15 +55,6 @@ PERIODS = {
     "2609now": ("2026-09-01", "2026-12-31", "2026年9月至今"),
     "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
 }
-
-LIVE_TTL = 300
-
-def r2_exists(key):
-    try:
-        s3.head_object(Bucket=R2_BUCKET, Key=key)
-        return True
-    except ClientError:
-        return False
 
 def r2_load(key):
     try:
@@ -294,32 +285,21 @@ def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False
 
     return results, {}
 
-@app.route('/api/day-tags')
-def day_tags():
-    date = request.args.get('date', '2026-10-21')
-    
-    cached_result = load_day_cache(date)
-    if cached_result is not None and not is_today(date):
-        return jsonify(cached_result)
-    
-    live = is_today(date)
+def compute_day_internal(date, force_live=False):
     body = {"date": f"{date}T00:00:00+08:00"}
-    races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=live)
+    races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=force_live)
     races = races_data.get("races", [])
 
     if not races:
-        result = {"date": date, "races": [], "live": live}
-        save_day_cache(date, result)
-        return jsonify(result)
+        return {"date": date, "races": [], "live": force_live}
 
     race_map = {r["no"]: r for r in races}
+    abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=force_live)
 
-    abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=live)
-    
     place_by_race = defaultdict(dict)
     horses_by_race = defaultdict(list)
     iu_by_race = defaultdict(lambda: defaultdict(list))
-    
+
     for r in abc.get("races", []):
         race_no = r.get("no", "?")
         for h in r.get("horses", []):
@@ -343,7 +323,7 @@ def day_tags():
             if prev:
                 prev_id = prev["ID"]
 
-        special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=live)
+        special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=force_live)
 
         tags = {}
         for tag_name, nos in iu_by_race.get(race_no, {}).items():
@@ -351,7 +331,7 @@ def day_tags():
             for n in sorted(set([n for n in nos if n and n > 0])):
                 horses.append({"no": n, "place": place_by_race[race_no].get(n, 0)})
             tags[tag_name] = horses
-        
+
         for tag_name, nos in special.items():
             if nos:
                 horses = []
@@ -359,17 +339,30 @@ def day_tags():
                     horses.append({"no": n, "place": place_by_race[race_no].get(n, 0)})
                 tags[tag_name] = horses
 
-        result_races.append({
-            "no": race_no,
-            "tags": tags
-        })
+        result_races.append({"no": race_no, "tags": tags})
 
-    result = {
-        "date": date,
-        "races": result_races,
-        "live": live
-    }
-    
+    return {"date": date, "races": result_races, "live": force_live}
+
+def background_refresh(date):
+    try:
+        result = compute_day_internal(date, force_live=True)
+        save_day_cache(date, result)
+        print(f"Background refresh done: {date}")
+    except Exception as e:
+        print(f"Background refresh error: {e}")
+
+@app.route('/api/day-tags')
+def day_tags():
+    date = request.args.get('date', '2026-10-21')
+
+    cached_result = load_day_cache(date)
+    if cached_result is not None:
+        if is_today(date):
+            threading.Thread(target=background_refresh, args=(date,), daemon=True).start()
+        return jsonify(cached_result)
+
+    live = is_today(date)
+    result = compute_day_internal(date, force_live=live)
     save_day_cache(date, result)
     return jsonify(result)
 
@@ -378,7 +371,7 @@ def race_dates():
     cached = load_dates_cache()
     if cached is not None:
         return jsonify(cached)
-    
+
     dates = set()
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -395,7 +388,7 @@ def race_dates():
                         dates.add(date_str)
     except Exception as e:
         print("scan dates error:", e)
-    
+
     result = {"dates": sorted(list(dates), reverse=True)}
     save_dates_cache(result)
     return jsonify(result)
@@ -405,19 +398,19 @@ def tag_rates():
     period = request.args.get('period', '2509now')
     if period not in PERIODS:
         period = '2509now'
-    
+
     start_str, end_str, label = PERIODS[period]
     cache_key = f"rate/rates_{period}.json"
-    
+
     cached = r2_load(cache_key)
     if cached is not None:
         return jsonify(cached)
-    
+
     start_date = datetime.strptime(start_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_str, "%Y-%m-%d")
-    
+
     stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
-    
+
     dates = []
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -436,19 +429,19 @@ def tag_rates():
                             dates.append(date_str)
     except:
         pass
-    
+
     dates = sorted(set(dates))
-    
+
     for date_str in dates:
         body = {"date": f"{date_str}T00:00:00+08:00"}
         races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
         races = races_data.get("races", [])
         if not races:
             continue
-        
+
         race_map = {r["no"]: r for r in races}
         abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=False)
-        
+
         horses_by_race = defaultdict(list)
         iu_by_race = defaultdict(lambda: defaultdict(list))
         for r in abc.get("races", []):
@@ -461,7 +454,7 @@ def tag_rates():
                         if name in TARGET_TAGS:
                             display = TARGET_TAGS[name]
                             iu_by_race[race_no][display].append(h.get("no"))
-        
+
         for race in races:
             race_no = race.get("no", "?")
             prev_id = None
@@ -469,16 +462,16 @@ def tag_rates():
                 prev = race_map.get(str(int(race_no) - 1))
                 if prev:
                     prev_id = prev["ID"]
-            
+
             special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=False)
-            
+
             all_tags_this_race = {}
             for tag_name, nos in iu_by_race.get(race_no, {}).items():
                 all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
             for tag_name, nos in special.items():
                 if nos:
                     all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-            
+
             for r in abc.get("races", []):
                 if r.get("no") != race_no:
                     continue
@@ -489,7 +482,7 @@ def tag_rates():
                     place = h.get("result", {}).get("place", 0)
                     if place <= 0:
                         continue
-                    
+
                     for tag_name, nos in all_tags_this_race.items():
                         if no in nos:
                             stats[tag_name]["total"] += 1
@@ -497,7 +490,7 @@ def tag_rates():
                                 stats[tag_name]["win"] += 1
                             if place <= 3:
                                 stats[tag_name]["top3"] += 1
-    
+
     result = {}
     for tag in ALL_TAGS:
         s = stats.get(tag, {"total": 0, "win": 0, "top3": 0})
@@ -518,7 +511,7 @@ def tag_rates():
                 "winRate": 0,
                 "top3Rate": 0
             }
-    
+
     output = {
         "period": period,
         "label": label,
@@ -526,7 +519,7 @@ def tag_rates():
         "end": end_str,
         "stats": result
     }
-    
+
     r2_save(cache_key, output)
     return jsonify(output)
 
@@ -535,19 +528,19 @@ def all_combo_rates():
     period = request.args.get('period', '2509now')
     if period not in PERIODS:
         period = '2509now'
-    
+
     start_str, end_str, label = PERIODS[period]
     cache_key = f"rate/all_combos_{period}.json"
-    
+
     cached = r2_load(cache_key)
     if cached is not None:
         return jsonify(cached)
-    
+
     start_date = datetime.strptime(start_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_str, "%Y-%m-%d")
-    
+
     pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
-    
+
     dates = []
     try:
         paginator = s3.get_paginator("list_objects_v2")
@@ -566,19 +559,19 @@ def all_combo_rates():
                             dates.append(date_str)
     except:
         pass
-    
+
     dates = sorted(set(dates))
-    
+
     for date_str in dates:
         body = {"date": f"{date_str}T00:00:00+08:00"}
         races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
         races = races_data.get("races", [])
         if not races:
             continue
-        
+
         race_map = {r["no"]: r for r in races}
         abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=False)
-        
+
         horses_by_race = defaultdict(list)
         iu_by_race = defaultdict(lambda: defaultdict(list))
         for r in abc.get("races", []):
@@ -591,7 +584,7 @@ def all_combo_rates():
                         if name in TARGET_TAGS:
                             display = TARGET_TAGS[name]
                             iu_by_race[race_no][display].append(h.get("no"))
-        
+
         for race in races:
             race_no = race.get("no", "?")
             prev_id = None
@@ -599,21 +592,21 @@ def all_combo_rates():
                 prev = race_map.get(str(int(race_no) - 1))
                 if prev:
                     prev_id = prev["ID"]
-            
+
             special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=False)
-            
+
             all_tags_this_race = {}
             for tag_name, nos in iu_by_race.get(race_no, {}).items():
                 all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
             for tag_name, nos in special.items():
                 if nos:
                     all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-            
+
             horse_tags = defaultdict(set)
             for tag_name, nos in all_tags_this_race.items():
                 for no in nos:
                     horse_tags[no].add(tag_name)
-            
+
             for r in abc.get("races", []):
                 if r.get("no") != race_no:
                     continue
@@ -624,7 +617,7 @@ def all_combo_rates():
                     place = h.get("result", {}).get("place", 0)
                     if place <= 0:
                         continue
-                    
+
                     tags_on_horse = list(horse_tags.get(no, set()))
                     for t1, t2 in combinations(sorted(tags_on_horse), 2):
                         key = f"{t1}|{t2}"
@@ -633,7 +626,7 @@ def all_combo_rates():
                             pair_stats[key]["win"] += 1
                         if place <= 3:
                             pair_stats[key]["top3"] += 1
-    
+
     combos = []
     for key, s in pair_stats.items():
         t1, t2 = key.split("|")
@@ -647,9 +640,9 @@ def all_combo_rates():
             "winRate": round(s["win"] / total * 100, 1) if total > 0 else 0,
             "top3Rate": round(s["top3"] / total * 100, 1) if total > 0 else 0
         })
-    
+
     combos.sort(key=lambda x: -x["winRate"])
-    
+
     output = {
         "period": period,
         "label": label,
@@ -657,7 +650,7 @@ def all_combo_rates():
         "end": end_str,
         "combos": combos
     }
-    
+
     r2_save(cache_key, output)
     return jsonify(output)
 

@@ -82,6 +82,14 @@ function App() {
       .then(r => r.json())
       .then(json => setData(json))
       .finally(() => setLoading(false))
+
+    const timer = setInterval(() => {
+      fetch(`${API_BASE}/api/day-tags?date=${currentDate}`)
+        .then(r => r.json())
+        .then(json => setData(json))
+    }, 5 * 60 * 1000)
+
+    return () => clearInterval(timer)
   }, [currentDate])
 
   useEffect(() => {
