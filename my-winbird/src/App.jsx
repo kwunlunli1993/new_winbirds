@@ -44,7 +44,8 @@ function App() {
   const [comboLoading, setComboLoading] = useState(false)
   const [comboSortBy, setComboSortBy] = useState("winRate")
   const [comboSortDesc, setComboSortDesc] = useState(true)
-  const [hiddenTags, setHiddenTags] = useState(new Set())
+  const [shownTagsSingle, setShownTagsSingle] = useState(new Set(DEFAULT_TAGS))
+  const [shownTagsCombo, setShownTagsCombo] = useState(new Set(DEFAULT_TAGS))
   const [comboPeriod, setComboPeriod] = useState('2509now')
   const [tagSortMode, setTagSortMode] = useState("default")
   const [hideEmptySingle, setHideEmptySingle] = useState(false)
@@ -158,13 +159,30 @@ function App() {
       .finally(() => setComboLoading(false))
   }
 
-  const toggleHidden = (tag) => {
-    setHiddenTags(prev => {
+  const toggleShownSingle = (tag) => {
+    setShownTagsSingle(prev => {
       const next = new Set(prev)
       if (next.has(tag)) next.delete(tag)
       else next.add(tag)
       return next
     })
+  }
+
+  const toggleShownCombo = (tag) => {
+    setShownTagsCombo(prev => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      return next
+    })
+  }
+
+  const selectAllSingle = () => {
+    setShownTagsSingle(new Set(DEFAULT_TAGS))
+  }
+
+  const selectAllCombo = () => {
+    setShownTagsCombo(new Set(DEFAULT_TAGS))
   }
 
   const handleSort = (field) => {
@@ -187,7 +205,7 @@ function App() {
 
   const getSortedStats = () => {
     if (!rates || !rates.stats) return []
-    const entries = Object.entries(rates.stats).filter(([tag]) => !hiddenTags.has(tag))
+    const entries = Object.entries(rates.stats).filter(([tag]) => shownTagsSingle.has(tag))
     return entries.sort((a, b) => {
       const valA = a[1][sortBy] || 0
       const valB = b[1][sortBy] || 0
@@ -198,13 +216,23 @@ function App() {
   const getSortedCombos = () => {
     if (!allCombos || !allCombos.combos) return []
     let filtered = allCombos.combos.filter(c => 
-      !hiddenTags.has(c.tag1) && !hiddenTags.has(c.tag2)
+      shownTagsCombo.has(c.tag1) && shownTagsCombo.has(c.tag2)
     )
     return filtered.sort((a, b) => {
       const valA = a[comboSortBy] || 0
       const valB = b[comboSortBy] || 0
       return comboSortDesc ? valB - valA : valA - valB
     })
+  }
+
+  const getSortedTagsForCheckboxes = () => {
+    if (!rates || !rates.stats) return DEFAULT_TAGS
+    const entries = Object.entries(rates.stats)
+    return entries.sort((a, b) => {
+      const valA = a[1][sortBy] || 0
+      const valB = b[1][sortBy] || 0
+      return sortDesc ? valB - valA : valA - valB
+    }).map(([tag]) => tag)
   }
 
   const getTagScores = () => {
@@ -295,7 +323,7 @@ function App() {
     if (!race || !race.tags) return []
     const countMap = {}
     DEFAULT_TAGS.forEach(tag => {
-      if (hiddenTags.has(tag)) return
+      if (!shownTagsSingle.has(tag)) return
       (race.tags[tag] || []).forEach(h => {
         countMap[h.no] = (countMap[h.no] || 0) + 1
       })
@@ -309,7 +337,7 @@ function App() {
     if (!race || !race.tags || !allCombos || !allCombos.combos) return []
     const countMap = {}
     allCombos.combos.forEach(c => {
-      if (hiddenTags.has(c.tag1) || hiddenTags.has(c.tag2)) return
+      if (!shownTagsCombo.has(c.tag1) || !shownTagsCombo.has(c.tag2)) return
       const horses = getRaceComboHorses(race, c.tag1, c.tag2)
       horses.forEach(h => {
         countMap[h.no] = (countMap[h.no] || 0) + 1
@@ -380,6 +408,7 @@ function App() {
   const displayTags = getDisplayTags()
   const tagScores = getTagScores()
   const races = data?.races || []
+  const sortedTagsForCheckboxes = getSortedTagsForCheckboxes()
 
   const filteredStats = getSortedStats().filter(([tag]) => !hideEmptySingle || hasAnyHorseToday(tag))
   const filteredCombos = getSortedCombos().filter(c => !hideEmptyCombo || hasAnyComboHorseToday(c.tag1, c.tag2))
@@ -566,19 +595,25 @@ function App() {
               <div style={{ marginBottom: 32, paddingLeft: 12 }}>
                 <p style={{ textAlign: 'center' }}>統計期間：{rates.label}（{rates.start} ~ {rates.end}）</p>
 
-                <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900 }}>
-                  <strong>隱藏以下 Tags：</strong>
+                <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900, position: 'relative' }}>
+                  <strong>顯示以下 Tags：</strong>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
-                    {DEFAULT_TAGS.map(tag => (
+                    {sortedTagsForCheckboxes.map(tag => (
                       <label key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
                         <input 
                           type="checkbox" 
-                          checked={hiddenTags.has(tag)} 
-                          onChange={() => toggleHidden(tag)} 
+                          checked={shownTagsSingle.has(tag)} 
+                          onChange={() => toggleShownSingle(tag)} 
                         />
                         {tag}
                       </label>
                     ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
+                      <input type="checkbox" checked={shownTagsSingle.size === DEFAULT_TAGS.length} onChange={selectAllSingle} />
+                      全選
+                    </label>
                   </div>
                 </div>
 
@@ -674,19 +709,25 @@ function App() {
               <div style={{ paddingLeft: 12 }}>
                 <p style={{ textAlign: 'center' }}>統計期間：{allCombos.label}（{allCombos.start} ~ {allCombos.end}）</p>
                 
-                <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900 }}>
-                  <strong>隱藏包含以下 Tags 的組合：</strong>
+                <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900, position: 'relative' }}>
+                  <strong>顯示包含以下 Tags 的組合：</strong>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
-                    {DEFAULT_TAGS.map(tag => (
+                    {sortedTagsForCheckboxes.map(tag => (
                       <label key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
                         <input 
                           type="checkbox" 
-                          checked={hiddenTags.has(tag)} 
-                          onChange={() => toggleHidden(tag)} 
+                          checked={shownTagsCombo.has(tag)} 
+                          onChange={() => toggleShownCombo(tag)} 
                         />
                         {tag}
                       </label>
                     ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
+                      <input type="checkbox" checked={shownTagsCombo.size === DEFAULT_TAGS.length} onChange={selectAllCombo} />
+                      全選
+                    </label>
                   </div>
                 </div>
 
