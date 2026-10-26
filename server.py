@@ -351,6 +351,53 @@ def background_refresh(date):
     except Exception as e:
         print(f"Background refresh error: {e}")
 
+def discover_new_dates():
+    """檢查今日到未來 14 日有冇新賽事，有就加入 dates_cache"""
+    print("[Discover] 開始檢查新賽日...")
+    existing = load_dates_cache() or {"dates": []}
+    existing_set = set(existing.get("dates", []))
+    new_found = False
+
+    today = datetime.now()
+    for i in range(0, 14):
+        d = (today + timedelta(days=i)).strftime("%Y-%m-%d")
+        if d in existing_set:
+            continue
+        body = {"date": f"{d}T00:00:00+08:00"}
+        data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
+        races = data.get("races", [])
+        if races and len(races) > 0:
+            existing_set.add(d)
+            new_found = True
+            print(f"[Discover] 發現新賽日: {d}")
+            # 預先計算 day 快取
+            if load_day_cache(d) is None:
+                try:
+                    result = compute_day_internal(d, force_live=False)
+                    save_day_cache(d, result)
+                    print(f"[Discover] 已預先計算 {d}")
+                except Exception as e:
+                    print(f"[Discover] 計算 {d} 失敗: {e}")
+
+    if new_found:
+        result = {"dates": sorted(list(existing_set), reverse=True)}
+        save_dates_cache(result)
+        print("[Discover] dates_cache 已更新")
+    else:
+        print("[Discover] 冇新賽日")
+
+def background_discover_loop():
+    """每 2 小時自動檢查一次"""
+    while True:
+        try:
+            discover_new_dates()
+        except Exception as e:
+            print(f"[Background Discover] 錯誤: {e}")
+        time.sleep(2 * 60 * 60)
+
+# 啟動背景自動檢查
+threading.Thread(target=background_discover_loop, daemon=True).start()
+
 @app.route('/api/day-tags')
 def day_tags():
     date = request.args.get('date', '2026-10-21')
@@ -368,6 +415,12 @@ def day_tags():
 
 @app.route('/api/race-dates')
 def race_dates():
+    # 每次有人開網站都順便檢查一次（快，因為有快取）
+    try:
+        discover_new_dates()
+    except Exception as e:
+        print(f"discover on request error: {e}")
+
     cached = load_dates_cache()
     if cached is not None:
         return jsonify(cached)
