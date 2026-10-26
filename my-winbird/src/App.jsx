@@ -181,8 +181,16 @@ function App() {
     setShownTagsSingle(new Set(DEFAULT_TAGS))
   }
 
+  const deselectAllSingle = () => {
+    setShownTagsSingle(new Set())
+  }
+
   const selectAllCombo = () => {
     setShownTagsCombo(new Set(DEFAULT_TAGS))
+  }
+
+  const deselectAllCombo = () => {
+    setShownTagsCombo(new Set())
   }
 
   const handleSort = (field) => {
@@ -609,7 +617,11 @@ function App() {
                       </label>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, gap: 16 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
+                      <input type="checkbox" checked={shownTagsSingle.size === 0} onChange={deselectAllSingle} />
+                      全取消
+                    </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
                       <input type="checkbox" checked={shownTagsSingle.size === DEFAULT_TAGS.length} onChange={selectAllSingle} />
                       全選
@@ -723,7 +735,11 @@ function App() {
                       </label>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8, gap: 16 }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
+                      <input type="checkbox" checked={shownTagsCombo.size === 0} onChange={deselectAllCombo} />
+                      全取消
+                    </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
                       <input type="checkbox" checked={shownTagsCombo.size === DEFAULT_TAGS.length} onChange={selectAllCombo} />
                       全選
