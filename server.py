@@ -676,3 +676,11 @@ def all_combo_rates():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
+
+@app.route('/api/clear-dates')
+def clear_dates():
+    try:
+        s3.delete_object(Bucket=R2_BUCKET, Key="dates_cache.json")
+        return jsonify({"status": "cleared"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
