@@ -54,6 +54,19 @@ PERIODS = {
     "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
 }
 
+# ===== 進度追蹤 =====
+update_progress = {
+    "running": False,
+    "percent": 0,
+    "message": "",
+    "current_period": "",
+}
+
+def set_progress(percent, message="", period=""):
+    update_progress["percent"] = percent
+    update_progress["message"] = message
+    update_progress["current_period"] = period
+
 def r2_load(key):
     try:
         obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
@@ -360,7 +373,10 @@ def discover_new_race_days():
 
 def update_all_rates():
     try:
+        update_progress["running"] = True
+        set_progress(5, "正在掃描日子...")
         print("Updating rates...")
+
         dates = set()
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
@@ -374,16 +390,23 @@ def update_all_rates():
                             dates.add(date_str)
 
         sorted_dates = sorted(list(dates), reverse=True)
+        set_progress(15, f"找到 {len(sorted_dates)} 個賽馬日")
 
+        periods_to_do = []
         for period, (start_str, end_str, label) in PERIODS.items():
-            # 只跳過冇新日子嘅 2526
             if period == "2526":
                 has_new = any(start_str <= d <= end_str for d in sorted_dates)
                 if not has_new:
                     print("Skip 2526 (no new days)")
                     continue
+            periods_to_do.append((period, start_str, end_str, label))
 
+        total_periods = len(periods_to_do)
+        for idx, (period, start_str, end_str, label) in enumerate(periods_to_do):
+            base = 20 + int(70 * idx / max(total_periods, 1))
+            set_progress(base, f"正在計算 {label}", period)
             print(f"Calculating {period}...")
+
             stats = {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
             for date in sorted_dates:
                 if not (start_str <= date <= end_str):
@@ -411,6 +434,7 @@ def update_all_rates():
                 "period": period, "label": label, "start": start_str, "end": end_str, "stats": stats
             })
 
+            set_progress(base + 10, f"正在計算 {label} 組合", period)
             combos = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
             for date in sorted_dates:
                 if not (start_str <= date <= end_str):
@@ -450,9 +474,14 @@ def update_all_rates():
             r2_save(f"rate/all_combos_{period}.json", {
                 "period": period, "label": label, "start": start_str, "end": end_str, "combos": result_combos
             })
+
+        set_progress(100, "完成")
         print("Rates update done")
     except Exception as e:
+        set_progress(0, f"錯誤: {e}")
         print("update rates error:", e)
+    finally:
+        update_progress["running"] = False
 
 def background_jobs():
     while True:
@@ -533,9 +562,16 @@ def all_combo_rates():
         "combos": []
     })
 
+# ===== 進度查詢 =====
+@app.route('/api/update-progress')
+def get_update_progress():
+    return jsonify(update_progress)
+
 # ===== 手動觸發 =====
 @app.route('/api/update-rates')
 def manual_update_rates():
+    if update_progress["running"]:
+        return jsonify({"status": "already running", "progress": update_progress})
     threading.Thread(target=update_all_rates, daemon=True).start()
     return jsonify({"status": "updating rates in background"})
 
