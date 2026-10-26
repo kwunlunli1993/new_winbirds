@@ -343,18 +343,18 @@ def background_refresh(date):
         print(f"Background refresh error: {e}")
 
 def discover_new_race_days():
-    """掃最近10日 + 未來5日"""
+    """只儲真正有賽事嘅日子"""
     try:
         today = datetime.now().date()
-        for i in range(-5, 11):
+        for i in range(-7, 8):
             d = (today + timedelta(days=i)).strftime("%Y-%m-%d")
             cached = load_day_cache(d)
             if cached is None:
-                print(f"Discovering new day: {d}")
                 result = compute_day_internal(d, force_live=True)
-                if result.get("races"):
+                # 只儲有賽事嘅日子
+                if result.get("races") and len(result["races"]) > 0:
                     save_day_cache(d, result)
-                    print(f"Saved new day: {d}")
+                    print(f"Saved race day: {d}")
     except Exception as e:
         print("discover error:", e)
 
