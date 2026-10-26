@@ -353,10 +353,8 @@ def background_refresh(date):
         print(f"Background refresh error: {e}")
 
 def get_official_race_dates():
-    """從香港賽馬會官方賽期表抓取真正有賽事的日期"""
     dates = set()
     try:
-        # 抓取今個月同下個月
         now = datetime.now()
         for month_offset in range(0, 2):
             year = now.year
@@ -369,8 +367,6 @@ def get_official_race_dates():
             if resp.status_code != 200:
                 continue
             html = resp.text
-            # 搵有賽事嘅日子（有 "田" 或 "谷" 標記 + 數字日期）
-            # 簡單做法：搵所有 YYYY-MM-DD 格式，再驗證
             pattern = r'(\d{4})-(\d{2})-(\d{2})'
             for m in re.finditer(pattern, html):
                 y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -382,14 +378,12 @@ def get_official_race_dates():
     return dates
 
 def discover_new_dates():
-    """只加入官方賽期表有賽事、而且唔係太遠未來嘅日期"""
     print("[Discover] 開始檢查官方賽期表...")
     existing = load_dates_cache() or {"dates": []}
     existing_set = set(existing.get("dates", []))
 
     official_dates = get_official_race_dates()
     today = datetime.now().date()
-    # 只容許到下一個賽馬日（或者今日之後 7 日內）
     max_future = today + timedelta(days=7)
 
     new_found = False
@@ -400,7 +394,6 @@ def discover_new_dates():
                 continue
             if d_str in existing_set:
                 continue
-            # 確認 Winbird 真係有呢日數據
             body = {"date": f"{d_str}T00:00:00+08:00"}
             data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
             races = data.get("races", [])
@@ -433,6 +426,157 @@ def background_discover_loop():
         time.sleep(2 * 60 * 60)
 
 threading.Thread(target=background_discover_loop, daemon=True).start()
+
+def background_update_rates(period):
+    try:
+        print(f"[Rates] 後台更新 {period}")
+        start_str, end_str, label = PERIODS[period]
+        start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+
+        stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+
+        dates = []
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if not key.endswith(".json"):
+                        continue
+                    date_str = key.replace("day/", "").replace(".json", "")
+                    try:
+                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if start_date <= race_date <= end_date:
+                            dates.append(date_str)
+                    except:
+                        pass
+        except:
+            pass
+
+        dates = sorted(set(dates))
+
+        for date_str in dates:
+            data = load_day_cache(date_str)
+            if not data or "races" not in data:
+                continue
+            for race in data["races"]:
+                for tag, horses in race.get("tags", {}).items():
+                    for h in horses:
+                        stats[tag]["total"] += 1
+                        place = h.get("place", 0)
+                        if place == 1:
+                            stats[tag]["win"] += 1
+                        if 1 <= place <= 3:
+                            stats[tag]["top3"] += 1
+
+        result = {}
+        for tag in ALL_TAGS:
+            s = stats.get(tag, {"total": 0, "win": 0, "top3": 0})
+            total = s["total"]
+            result[tag] = {
+                "total": total,
+                "win": s["win"],
+                "top3": s["top3"],
+                "winRate": round(s["win"] / total * 100, 1) if total else 0,
+                "top3Rate": round(s["top3"] / total * 100, 1) if total else 0,
+            }
+
+        output = {
+            "period": period,
+            "label": label,
+            "start": start_str,
+            "end": end_str,
+            "stats": result
+        }
+        r2_save(f"rate/rates_{period}.json", output)
+        print(f"[Rates] {period} 更新完成")
+    except Exception as e:
+        print(f"[Rates] 更新失敗: {e}")
+
+def background_update_combos(period):
+    try:
+        print(f"[Combos] 後台更新 {period}")
+        start_str, end_str, label = PERIODS[period]
+        start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+
+        pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+
+        dates = []
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if not key.endswith(".json"):
+                        continue
+                    date_str = key.replace("day/", "").replace(".json", "")
+                    try:
+                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if start_date <= race_date <= end_date:
+                            dates.append(date_str)
+                    except:
+                        pass
+        except:
+            pass
+
+        dates = sorted(set(dates))
+
+        for date_str in dates:
+            data = load_day_cache(date_str)
+            if not data or "races" not in data:
+                continue
+            for race in data["races"]:
+                tags = race.get("tags", {})
+                horse_tags = defaultdict(set)
+                for tag_name, horses in tags.items():
+                    for h in horses:
+                        horse_tags[h["no"]].add(tag_name)
+
+                for no, tag_set in horse_tags.items():
+                    place = 0
+                    for t, hs in tags.items():
+                        for h in hs:
+                            if h["no"] == no:
+                                place = h.get("place", 0)
+                                break
+                    if place <= 0:
+                        continue
+                    for t1, t2 in combinations(sorted(tag_set), 2):
+                        key = f"{t1}|{t2}"
+                        pair_stats[key]["total"] += 1
+                        if place == 1:
+                            pair_stats[key]["win"] += 1
+                        if place <= 3:
+                            pair_stats[key]["top3"] += 1
+
+        combos = []
+        for key, s in pair_stats.items():
+            t1, t2 = key.split("|")
+            total = s["total"]
+            combos.append({
+                "tag1": t1,
+                "tag2": t2,
+                "total": total,
+                "win": s["win"],
+                "top3": s["top3"],
+                "winRate": round(s["win"] / total * 100, 1) if total > 0 else 0,
+                "top3Rate": round(s["top3"] / total * 100, 1) if total > 0 else 0
+            })
+        combos.sort(key=lambda x: -x["winRate"])
+
+        output = {
+            "period": period,
+            "label": label,
+            "start": start_str,
+            "end": end_str,
+            "combos": combos
+        }
+        r2_save(f"rate/all_combos_{period}.json", output)
+        print(f"[Combos] {period} 更新完成")
+    except Exception as e:
+        print(f"[Combos] 更新失敗: {e}")
 
 @app.route('/api/day-tags')
 def day_tags():
@@ -487,128 +631,22 @@ def tag_rates():
     if period not in PERIODS:
         period = '2509now'
 
-    start_str, end_str, label = PERIODS[period]
     cache_key = f"rate/rates_{period}.json"
-
     cached = r2_load(cache_key)
+
+    threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
+
     if cached is not None:
         return jsonify(cached)
 
-    start_date = datetime.strptime(start_str, "%Y-%m-%d")
-    end_date = datetime.strptime(end_str, "%Y-%m-%d")
-
-    stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
-
-    dates = []
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="api/"):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if not key.endswith(".json"):
-                    continue
-                data = r2_load(key)
-                if data and "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
-                    first_race = data["races"][0]
-                    date_str = first_race.get("date", "")[:10]
-                    if date_str:
-                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                        if start_date <= race_date <= end_date:
-                            dates.append(date_str)
-    except:
-        pass
-
-    dates = sorted(set(dates))
-
-    for date_str in dates:
-        body = {"date": f"{date_str}T00:00:00+08:00"}
-        races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
-        races = races_data.get("races", [])
-        if not races:
-            continue
-
-        race_map = {r["no"]: r for r in races}
-        abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=False)
-
-        horses_by_race = defaultdict(list)
-        iu_by_race = defaultdict(lambda: defaultdict(list))
-        for r in abc.get("races", []):
-            race_no = r.get("no", "?")
-            for h in r.get("horses", []):
-                if is_valid_horse(h):
-                    horses_by_race[race_no].append(h)
-                    for tag in h.get("tags", []):
-                        name = tag.get("name", "")
-                        if name in TARGET_TAGS:
-                            display = TARGET_TAGS[name]
-                            iu_by_race[race_no][display].append(h.get("no"))
-
-        for race in races:
-            race_no = race.get("no", "?")
-            prev_id = None
-            if int(race_no) > 1:
-                prev = race_map.get(str(int(race_no) - 1))
-                if prev:
-                    prev_id = prev["ID"]
-
-            special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=False)
-
-            all_tags_this_race = {}
-            for tag_name, nos in iu_by_race.get(race_no, {}).items():
-                all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-            for tag_name, nos in special.items():
-                if nos:
-                    all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-
-            for r in abc.get("races", []):
-                if r.get("no") != race_no:
-                    continue
-                for h in r.get("horses", []):
-                    if not is_valid_horse(h):
-                        continue
-                    no = h.get("no")
-                    place = h.get("result", {}).get("place", 0)
-                    if place <= 0:
-                        continue
-
-                    for tag_name, nos in all_tags_this_race.items():
-                        if no in nos:
-                            stats[tag_name]["total"] += 1
-                            if place == 1:
-                                stats[tag_name]["win"] += 1
-                            if place <= 3:
-                                stats[tag_name]["top3"] += 1
-
-    result = {}
-    for tag in ALL_TAGS:
-        s = stats.get(tag, {"total": 0, "win": 0, "top3": 0})
-        total = s["total"]
-        if total > 0:
-            result[tag] = {
-                "total": total,
-                "win": s["win"],
-                "top3": s["top3"],
-                "winRate": round(s["win"] / total * 100, 1),
-                "top3Rate": round(s["top3"] / total * 100, 1)
-            }
-        else:
-            result[tag] = {
-                "total": 0,
-                "win": 0,
-                "top3": 0,
-                "winRate": 0,
-                "top3Rate": 0
-            }
-
+    start_str, end_str, label = PERIODS[period]
     output = {
         "period": period,
         "label": label,
         "start": start_str,
         "end": end_str,
-        "stats": result
+        "stats": {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
     }
-
-    r2_save(cache_key, output)
     return jsonify(output)
 
 @app.route('/api/all-combo-rates')
@@ -617,129 +655,22 @@ def all_combo_rates():
     if period not in PERIODS:
         period = '2509now'
 
-    start_str, end_str, label = PERIODS[period]
     cache_key = f"rate/all_combos_{period}.json"
-
     cached = r2_load(cache_key)
+
+    threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
+
     if cached is not None:
         return jsonify(cached)
 
-    start_date = datetime.strptime(start_str, "%Y-%m-%d")
-    end_date = datetime.strptime(end_str, "%Y-%m-%d")
-
-    pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
-
-    dates = []
-    try:
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="api/"):
-            for obj in page.get("Contents", []):
-                key = obj["Key"]
-                if not key.endswith(".json"):
-                    continue
-                data = r2_load(key)
-                if data and "races" in data and isinstance(data["races"], list) and len(data["races"]) > 0:
-                    first_race = data["races"][0]
-                    date_str = first_race.get("date", "")[:10]
-                    if date_str:
-                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                        if start_date <= race_date <= end_date:
-                            dates.append(date_str)
-    except:
-        pass
-
-    dates = sorted(set(dates))
-
-    for date_str in dates:
-        body = {"date": f"{date_str}T00:00:00+08:00"}
-        races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
-        races = races_data.get("races", [])
-        if not races:
-            continue
-
-        race_map = {r["no"]: r for r in races}
-        abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=False)
-
-        horses_by_race = defaultdict(list)
-        iu_by_race = defaultdict(lambda: defaultdict(list))
-        for r in abc.get("races", []):
-            race_no = r.get("no", "?")
-            for h in r.get("horses", []):
-                if is_valid_horse(h):
-                    horses_by_race[race_no].append(h)
-                    for tag in h.get("tags", []):
-                        name = tag.get("name", "")
-                        if name in TARGET_TAGS:
-                            display = TARGET_TAGS[name]
-                            iu_by_race[race_no][display].append(h.get("no"))
-
-        for race in races:
-            race_no = race.get("no", "?")
-            prev_id = None
-            if int(race_no) > 1:
-                prev = race_map.get(str(int(race_no) - 1))
-                if prev:
-                    prev_id = prev["ID"]
-
-            special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=False)
-
-            all_tags_this_race = {}
-            for tag_name, nos in iu_by_race.get(race_no, {}).items():
-                all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-            for tag_name, nos in special.items():
-                if nos:
-                    all_tags_this_race[tag_name] = set([n for n in nos if n and n > 0])
-
-            horse_tags = defaultdict(set)
-            for tag_name, nos in all_tags_this_race.items():
-                for no in nos:
-                    horse_tags[no].add(tag_name)
-
-            for r in abc.get("races", []):
-                if r.get("no") != race_no:
-                    continue
-                for h in r.get("horses", []):
-                    if not is_valid_horse(h):
-                        continue
-                    no = h.get("no")
-                    place = h.get("result", {}).get("place", 0)
-                    if place <= 0:
-                        continue
-
-                    tags_on_horse = list(horse_tags.get(no, set()))
-                    for t1, t2 in combinations(sorted(tags_on_horse), 2):
-                        key = f"{t1}|{t2}"
-                        pair_stats[key]["total"] += 1
-                        if place == 1:
-                            pair_stats[key]["win"] += 1
-                        if place <= 3:
-                            pair_stats[key]["top3"] += 1
-
-    combos = []
-    for key, s in pair_stats.items():
-        t1, t2 = key.split("|")
-        total = s["total"]
-        combos.append({
-            "tag1": t1,
-            "tag2": t2,
-            "total": total,
-            "win": s["win"],
-            "top3": s["top3"],
-            "winRate": round(s["win"] / total * 100, 1) if total > 0 else 0,
-            "top3Rate": round(s["top3"] / total * 100, 1) if total > 0 else 0
-        })
-
-    combos.sort(key=lambda x: -x["winRate"])
-
+    start_str, end_str, label = PERIODS[period]
     output = {
         "period": period,
         "label": label,
         "start": start_str,
         "end": end_str,
-        "combos": combos
+        "combos": []
     }
-
-    r2_save(cache_key, output)
     return jsonify(output)
 
 if __name__ == '__main__':
