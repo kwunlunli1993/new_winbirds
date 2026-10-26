@@ -337,8 +337,9 @@ def compute_day_internal(date, force_live=False):
 def background_refresh(date):
     try:
         result = compute_day_internal(date, force_live=True)
-        save_day_cache(date, result)
-        print(f"Background refresh done: {date}")
+        if result.get("races") and len(result["races"]) > 0:
+            save_day_cache(date, result)
+            print(f"Background refresh done: {date}")
     except Exception as e:
         print(f"Background refresh error: {e}")
 
@@ -351,7 +352,6 @@ def discover_new_race_days():
             cached = load_day_cache(d)
             if cached is None:
                 result = compute_day_internal(d, force_live=True)
-                # 只儲有賽事嘅日子
                 if result.get("races") and len(result["races"]) > 0:
                     save_day_cache(d, result)
                     print(f"Saved race day: {d}")
@@ -359,7 +359,6 @@ def discover_new_race_days():
         print("discover error:", e)
 
 def update_all_rates():
-    """每60分鐘更新一次勝率"""
     try:
         print("Updating rates...")
         dates = set()
@@ -370,12 +369,13 @@ def update_all_rates():
                 if key.endswith(".json"):
                     date_str = key.replace("day/", "").replace(".json", "")
                     if len(date_str) == 10:
-                        dates.add(date_str)
+                        data = r2_load(key)
+                        if data and data.get("races") and len(data["races"]) > 0:
+                            dates.add(date_str)
 
         sorted_dates = sorted(list(dates), reverse=True)
 
         for period, (start_str, end_str, label) in PERIODS.items():
-            # 單tag
             stats = {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
             for date in sorted_dates:
                 if not (start_str <= date <= end_str):
@@ -403,7 +403,6 @@ def update_all_rates():
                 "period": period, "label": label, "start": start_str, "end": end_str, "stats": stats
             })
 
-            # 2tags
             combos = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
             for date in sorted_dates:
                 if not (start_str <= date <= end_str):
@@ -454,9 +453,8 @@ def background_jobs():
             update_all_rates()
         except Exception as e:
             print("background job error:", e)
-        time.sleep(900)  # 15 分鐘
+        time.sleep(900)
 
-# 啟動背景任務
 threading.Thread(target=background_jobs, daemon=True).start()
 
 @app.route('/api/day-tags')
@@ -470,7 +468,8 @@ def day_tags():
 
     live = is_today(date)
     result = compute_day_internal(date, force_live=live)
-    save_day_cache(date, result)
+    if result.get("races") and len(result["races"]) > 0:
+        save_day_cache(date, result)
     return jsonify(result)
 
 @app.route('/api/race-dates')
