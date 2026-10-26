@@ -427,8 +427,160 @@ def background_discover_loop():
 
 threading.Thread(target=background_discover_loop, daemon=True).start()
 
-# ========== 已停用後台計勝率（避免爆 memory）==========
-# 以下兩個 function 暫時唔會自動跑
+# ========== 輕量計勝率（只讀已有 day 檔，唔 call API）==========
+def background_update_rates(period):
+    try:
+        print(f"[Rates] 輕量更新 {period}")
+        start_str, end_str, label = PERIODS[period]
+        start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+
+        stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+
+        # 只 list 一次，然後逐個讀
+        dates = []
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith(".json"):
+                        date_str = key.replace("day/", "").replace(".json", "")
+                        try:
+                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                            if start_date <= race_date <= end_date:
+                                dates.append(date_str)
+                        except:
+                            pass
+        except Exception as e:
+            print(f"[Rates] list error: {e}")
+            return
+
+        dates = sorted(set(dates))
+        print(f"[Rates] {period} 共 {len(dates)} 日")
+
+        for i, date_str in enumerate(dates):
+            data = load_day_cache(date_str)
+            if not data or "races" not in data:
+                continue
+            for race in data["races"]:
+                for tag, horses in race.get("tags", {}).items():
+                    for h in horses:
+                        stats[tag]["total"] += 1
+                        place = h.get("place", 0)
+                        if place == 1:
+                            stats[tag]["win"] += 1
+                        if 1 <= place <= 3:
+                            stats[tag]["top3"] += 1
+            if (i + 1) % 20 == 0:
+                print(f"[Rates] 已處理 {i+1}/{len(dates)}")
+
+        result = {}
+        for tag in ALL_TAGS:
+            s = stats.get(tag, {"total": 0, "win": 0, "top3": 0})
+            total = s["total"]
+            result[tag] = {
+                "total": total,
+                "win": s["win"],
+                "top3": s["top3"],
+                "winRate": round(s["win"] / total * 100, 1) if total else 0,
+                "top3Rate": round(s["top3"] / total * 100, 1) if total else 0,
+            }
+
+        output = {
+            "period": period,
+            "label": label,
+            "start": start_str,
+            "end": end_str,
+            "stats": result
+        }
+        r2_save(f"rate/rates_{period}.json", output)
+        print(f"[Rates] {period} 更新完成")
+    except Exception as e:
+        print(f"[Rates] 更新失敗: {e}")
+
+def background_update_combos(period):
+    try:
+        print(f"[Combos] 輕量更新 {period}")
+        start_str, end_str, label = PERIODS[period]
+        start_date = datetime.strptime(start_str, "%Y-%m-%d")
+        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+
+        pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+
+        dates = []
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if key.endswith(".json"):
+                        date_str = key.replace("day/", "").replace(".json", "")
+                        try:
+                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                            if start_date <= race_date <= end_date:
+                                dates.append(date_str)
+                        except:
+                            pass
+        except:
+            return
+
+        dates = sorted(set(dates))
+
+        for date_str in dates:
+            data = load_day_cache(date_str)
+            if not data or "races" not in data:
+                continue
+            for race in data["races"]:
+                tags = race.get("tags", {})
+                horse_tags = defaultdict(set)
+                for tag_name, horses in tags.items():
+                    for h in horses:
+                        horse_tags[h["no"]].add(tag_name)
+
+                for no, tag_set in horse_tags.items():
+                    place = 0
+                    for t, hs in tags.items():
+                        for h in hs:
+                            if h["no"] == no:
+                                place = h.get("place", 0)
+                                break
+                    if place <= 0:
+                        continue
+                    for t1, t2 in combinations(sorted(tag_set), 2):
+                        key = f"{t1}|{t2}"
+                        pair_stats[key]["total"] += 1
+                        if place == 1:
+                            pair_stats[key]["win"] += 1
+                        if place <= 3:
+                            pair_stats[key]["top3"] += 1
+
+        combos = []
+        for key, s in pair_stats.items():
+            t1, t2 = key.split("|")
+            total = s["total"]
+            combos.append({
+                "tag1": t1,
+                "tag2": t2,
+                "total": total,
+                "win": s["win"],
+                "top3": s["top3"],
+                "winRate": round(s["win"] / total * 100, 1) if total > 0 else 0,
+                "top3Rate": round(s["top3"] / total * 100, 1) if total > 0 else 0
+            })
+        combos.sort(key=lambda x: -x["winRate"])
+
+        output = {
+            "period": period,
+            "label": label,
+            "start": start_str,
+            "end": end_str,
+            "combos": combos
+        }
+        r2_save(f"rate/all_combos_{period}.json", output)
+        print(f"[Combos] {period} 更新完成")
+    except Exception as e:
+        print(f"[Combos] 更新失敗: {e}")
 
 @app.route('/api/day-tags')
 def day_tags():
@@ -486,8 +638,8 @@ def tag_rates():
     cache_key = f"rate/rates_{period}.json"
     cached = r2_load(cache_key)
 
-    # 已停用自動計算
-    # threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
+    # 輕量更新（只讀已有檔）
+    threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
 
     if cached is not None:
         return jsonify(cached)
@@ -511,8 +663,7 @@ def all_combo_rates():
     cache_key = f"rate/all_combos_{period}.json"
     cached = r2_load(cache_key)
 
-    # 已停用自動計算
-    # threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
+    threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
 
     if cached is not None:
         return jsonify(cached)
