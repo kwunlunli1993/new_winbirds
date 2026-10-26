@@ -365,9 +365,18 @@ def discover_new_race_days():
             cached = load_day_cache(d)
             if cached is None:
                 result = compute_day_internal(d, force_live=True)
-                if result.get("races") and len(result["races"]) > 0:
+                # 加強檢查：至少有一場有馬
+                has_real_races = False
+                if result.get("races"):
+                    for race in result["races"]:
+                        if race.get("tags") and any(race["tags"].values()):
+                            has_real_races = True
+                            break
+                if has_real_races:
                     save_day_cache(d, result)
                     print(f"Saved race day: {d}")
+                else:
+                    print(f"Skip empty day: {d}")
     except Exception as e:
         print("discover error:", e)
 
