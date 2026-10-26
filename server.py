@@ -54,7 +54,6 @@ PERIODS = {
     "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
 }
 
-# ===== 進度追蹤 =====
 update_progress = {
     "running": False,
     "percent": 0,
@@ -114,6 +113,27 @@ def is_today(date_str):
         return target == datetime.now().date()
     except:
         return False
+
+def today_str():
+    return datetime.now().date().strftime("%Y-%m-%d")
+
+def day_has_result(day):
+    for race in (day or {}).get("races") or []:
+        for horses in (race.get("tags") or {}).values():
+            for h in horses or []:
+                if isinstance(h, dict) and int(h.get("place") or 0) > 0:
+                    return True
+    return False
+
+def include_in_date_list(date_str, data):
+    if not data or not data.get("races"):
+        return False
+    today = today_str()
+    if date_str > today:
+        return False
+    if day_has_result(data):
+        return True
+    return date_str == today
 
 def call_winbird(endpoint, body="{}", force_live=False):
     cache_key = get_cache_key(endpoint, body)
@@ -247,7 +267,7 @@ def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False
                 continue
             orange = 0
             for i in range(1, len(values)):
-                prev = values[i-1]
+                prev = values[i - 1]
                 curr = values[i]
                 if prev > 0 and (curr - prev) / prev <= -0.30:
                     orange += 1
@@ -296,7 +316,12 @@ def compute_day_internal(date, force_live=False):
     races = races_data.get("races", [])
 
     if not races:
-        return {"date": date, "races": [], "live": force_live}
+        return {"date": date, "races": [], "live": force_live, "matched": False}
+
+    matched = any(str(r.get("date", ""))[:10] == date for r in races)
+    if not matched:
+        print(f"Skip date mismatch: {date}")
+        return {"date": date, "races": [], "live": force_live, "matched": False}
 
     race_map = {r["no"]: r for r in races}
     abc = call_winbird("/api/race/getRaceABC2", json.dumps(races[0]), force_live=force_live)
@@ -323,7 +348,7 @@ def compute_day_internal(date, force_live=False):
     for race in races:
         race_no = race.get("no", "?")
         prev_id = None
-        if int(race_no) > 1:
+        if str(race_no).isdigit() and int(race_no) > 1:
             prev = race_map.get(str(int(race_no) - 1))
             if prev:
                 prev_id = prev["ID"]
@@ -335,48 +360,41 @@ def compute_day_internal(date, force_live=False):
             horses = []
             for n in sorted(set([n for n in nos if n and n > 0])):
                 horses.append({"no": n, "place": place_by_race[race_no].get(n, 0)})
-            tags[tag_name] = horses
+            if horses:
+                tags[tag_name] = horses
 
         for tag_name, nos in special.items():
-            if nos:
-                horses = []
-                for n in sorted(set([n for n in nos if n and n > 0])):
-                    horses.append({"no": n, "place": place_by_race[race_no].get(n, 0)})
+            horses = []
+            for n in sorted(set([n for n in nos if n and n > 0])):
+                horses.append({"no": n, "place": place_by_race[race_no].get(n, 0)})
+            if horses:
                 tags[tag_name] = horses
 
         result_races.append({"no": race_no, "tags": tags})
 
-    return {"date": date, "races": result_races, "live": force_live}
+    return {"date": date, "races": result_races, "live": force_live, "matched": True}
 
 def background_refresh(date):
     try:
         result = compute_day_internal(date, force_live=True)
-        if result.get("races") and len(result["races"]) > 0:
+        if result.get("matched") and result.get("races"):
             save_day_cache(date, result)
             print(f"Background refresh done: {date}")
+        else:
+            print(f"Background refresh skipped: {date}")
     except Exception as e:
         print(f"Background refresh error: {e}")
 
 def discover_new_race_days():
-    """只儲真正有賽事嘅日子"""
+    """只檢查今日。API 日期唔係今日就唔儲。"""
     try:
-        today = datetime.now().date()
-        for i in range(-7, 8):
-            d = (today + timedelta(days=i)).strftime("%Y-%m-%d")
-            cached = load_day_cache(d)
-            if cached is None:
-                result = compute_day_internal(d, force_live=True)
-                has_real_races = False
-                if result.get("races"):
-                    for race in result["races"]:
-                        if race.get("tags") and any(race["tags"].values()):
-                            has_real_races = True
-                            break
-                if has_real_races:
-                    save_day_cache(d, result)
-                    print(f"Saved race day: {d}")
-                else:
-                    print(f"Skip empty day: {d}")
+        d = today_str()
+        result = compute_day_internal(d, force_live=True)
+        if result.get("matched") and result.get("races"):
+            save_day_cache(d, result)
+            print(f"Saved race day: {d}")
+        else:
+            print(f"Skip empty day: {d}")
     except Exception as e:
         print("discover error:", e)
 
@@ -395,23 +413,14 @@ def update_all_rates():
                     date_str = key.replace("day/", "").replace(".json", "")
                     if len(date_str) == 10:
                         data = r2_load(key)
-                        if data and data.get("races") and len(data["races"]) > 0:
+                        if include_in_date_list(date_str, data) and day_has_result(data):
                             dates.add(date_str)
 
         sorted_dates = sorted(list(dates), reverse=True)
         set_progress(15, f"找到 {len(sorted_dates)} 個賽馬日")
 
-        periods_to_do = []
-        for period, (start_str, end_str, label) in PERIODS.items():
-            if period == "2526":
-                has_new = any(start_str <= d <= end_str for d in sorted_dates)
-                if not has_new:
-                    print("Skip 2526 (no new days)")
-                    continue
-            periods_to_do.append((period, start_str, end_str, label))
-
-        total_periods = len(periods_to_do)
-        for idx, (period, start_str, end_str, label) in enumerate(periods_to_do):
+        total_periods = len(PERIODS)
+        for idx, (period, (start_str, end_str, label)) in enumerate(PERIODS.items()):
             base = 20 + int(70 * idx / max(total_periods, 1))
             set_progress(base, f"正在計算 {label}", period)
             print(f"Calculating {period}...")
@@ -428,7 +437,9 @@ def update_all_rates():
                         if tag not in stats:
                             continue
                         for h in horses:
-                            place = h.get("place", 0)
+                            if not isinstance(h, dict):
+                                continue
+                            place = h.get("place", 0) or 0
                             stats[tag]["total"] += 1
                             if place == 1:
                                 stats[tag]["win"] += 1
@@ -456,10 +467,12 @@ def update_all_rates():
                     horse_place = {}
                     for tag, horses in race.get("tags", {}).items():
                         for h in horses:
+                            if not isinstance(h, dict):
+                                continue
                             no = h.get("no")
                             if no and no > 0:
                                 horse_tags[no].append(tag)
-                                horse_place[no] = h.get("place", 0)
+                                horse_place[no] = h.get("place", 0) or 0
                     for no, tags in horse_tags.items():
                         unique_tags = list(set(tags))
                         if len(unique_tags) >= 2:
@@ -495,29 +508,49 @@ def update_all_rates():
     finally:
         update_progress["running"] = False
 
-def background_jobs():
-    while True:
-        try:
-            discover_new_race_days()
-            update_all_rates()
-        except Exception as e:
-            print("background job error:", e)
-        time.sleep(900)
-
-threading.Thread(target=background_jobs, daemon=True).start()
+def pairs_from_combos(raw):
+    if raw and raw[0].get("tag1") and raw[0].get("tag2"):
+        return raw
+    pair = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+    for c in raw or []:
+        tags = sorted(set(t for t in c.get("tags", []) if t))
+        if len(tags) < 2:
+            continue
+        for i in range(len(tags)):
+            for j in range(i + 1, len(tags)):
+                key = (tags[i], tags[j])
+                pair[key]["total"] += c.get("total", 0)
+                pair[key]["win"] += c.get("win", 0)
+                pair[key]["top3"] += c.get("top3", 0)
+    combos = []
+    for (a, b), s in pair.items():
+        t = s["total"]
+        if t <= 0:
+            continue
+        combos.append({
+            "tag1": a,
+            "tag2": b,
+            "total": t,
+            "win": s["win"],
+            "top3": s["top3"],
+            "winRate": round(s["win"] / t * 100, 1),
+            "top3Rate": round(s["top3"] / t * 100, 1),
+        })
+    combos.sort(key=lambda x: (-x["winRate"], -x["total"]))
+    return combos
 
 @app.route('/api/day-tags')
 def day_tags():
     date = request.args.get('date', '2026-10-21')
     cached_result = load_day_cache(date)
-    if cached_result is not None:
+    if cached_result is not None and cached_result.get("races"):
         if is_today(date):
             threading.Thread(target=background_refresh, args=(date,), daemon=True).start()
         return jsonify(cached_result)
 
     live = is_today(date)
     result = compute_day_internal(date, force_live=live)
-    if result.get("races") and len(result["races"]) > 0:
+    if result.get("matched") and result.get("races"):
         save_day_cache(date, result)
     return jsonify(result)
 
@@ -533,7 +566,7 @@ def race_dates():
                     date_str = key.replace("day/", "").replace(".json", "")
                     if len(date_str) == 10 and date_str.count("-") == 2:
                         data = r2_load(key)
-                        if data and data.get("races") and len(data["races"]) > 0:
+                        if include_in_date_list(date_str, data):
                             dates.add(date_str)
     except Exception as e:
         print("scan dates error:", e)
@@ -562,24 +595,28 @@ def all_combo_rates():
     period = request.args.get('period', '2509now')
     if period not in PERIODS:
         period = '2509now'
-    cached = r2_load(f"rate/all_combos_{period}.json")
-    if cached is not None:
-        return jsonify(cached)
     start_str, end_str, label = PERIODS[period]
+    cached = r2_load(f"rate/all_combos_{period}.json")
+    if not cached or not cached.get("combos"):
+        return jsonify({
+            "period": period,
+            "label": label,
+            "start": start_str,
+            "end": end_str,
+            "combos": []
+        })
     return jsonify({
-        "period": period,
-        "label": label,
-        "start": start_str,
-        "end": end_str,
-        "combos": []
+        "period": cached.get("period", period),
+        "label": cached.get("label", label),
+        "start": cached.get("start", start_str),
+        "end": cached.get("end", end_str),
+        "combos": pairs_from_combos(cached["combos"]),
     })
 
-# ===== 進度查詢 =====
 @app.route('/api/update-progress')
 def get_update_progress():
     return jsonify(update_progress)
 
-# ===== 手動觸發 =====
 @app.route('/api/update-rates')
 def manual_update_rates():
     if update_progress["running"]:
@@ -590,7 +627,7 @@ def manual_update_rates():
 @app.route('/api/discover-dates')
 def manual_discover():
     threading.Thread(target=discover_new_race_days, daemon=True).start()
-    return jsonify({"status": "discovering dates in background"})
+    return jsonify({"status": "check today only"})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
