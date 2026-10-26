@@ -32,11 +32,22 @@ const PLACE_SCORE = {
 
 const API_BASE = 'https://new-winbirds.onrender.com'
 
+// Fallback 如果 race-dates 空
+const FALLBACK_DATES = [
+  "2026-10-26",
+  "2026-10-21",
+  "2026-10-18",
+  "2026-10-14",
+  "2026-10-11",
+]
+
 function App() {
   const [currentDate, setCurrentDate] = useState("")
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [raceDates, setRaceDates] = useState([])
+  const [datesLoading, setDatesLoading] = useState(true)
+  const [datesError, setDatesError] = useState("")
   const [rates, setRates] = useState(null)
   const [sortBy, setSortBy] = useState("winRate")
   const [sortDesc, setSortDesc] = useState(true)
@@ -67,13 +78,29 @@ function App() {
     document.body.style.margin = '0'
     document.body.style.padding = '0'
 
+    setDatesLoading(true)
+    setDatesError("")
     fetch(`${API_BASE}/api/race-dates`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then(json => {
-        const dates = json.dates || []
+        let dates = json.dates || []
+        if (dates.length === 0) {
+          dates = FALLBACK_DATES
+          setDatesError("伺服器冇返回日期，已用備用日期")
+        }
         setRaceDates(dates)
         if (dates.length > 0) setCurrentDate(dates[0])
       })
+      .catch(err => {
+        console.error(err)
+        setDatesError("載入日期失敗，已用備用日期")
+        setRaceDates(FALLBACK_DATES)
+        setCurrentDate(FALLBACK_DATES[0])
+      })
+      .finally(() => setDatesLoading(false))
   }, [])
 
   useEffect(() => {
@@ -82,12 +109,14 @@ function App() {
     fetch(`${API_BASE}/api/day-tags?date=${currentDate}`)
       .then(r => r.json())
       .then(json => setData(json))
+      .catch(() => setData(null))
       .finally(() => setLoading(false))
 
     const timer = setInterval(() => {
       fetch(`${API_BASE}/api/day-tags?date=${currentDate}`)
         .then(r => r.json())
         .then(json => setData(json))
+        .catch(() => {})
     }, 5 * 60 * 1000)
 
     return () => clearInterval(timer)
@@ -148,6 +177,7 @@ function App() {
     fetch(`${API_BASE}/api/tag-rates?period=${period}`)
       .then(r => r.json())
       .then(json => setRates(json))
+      .catch(() => setRates(null))
   }
 
   const loadAllCombos = (period) => {
@@ -156,6 +186,7 @@ function App() {
     fetch(`${API_BASE}/api/all-combo-rates?period=${period}`)
       .then(r => r.json())
       .then(json => setAllCombos(json))
+      .catch(() => setAllCombos(null))
       .finally(() => setComboLoading(false))
   }
 
@@ -177,38 +208,19 @@ function App() {
     })
   }
 
-  const selectAllSingle = () => {
-    setShownTagsSingle(new Set(DEFAULT_TAGS))
-  }
-
-  const deselectAllSingle = () => {
-    setShownTagsSingle(new Set())
-  }
-
-  const selectAllCombo = () => {
-    setShownTagsCombo(new Set(DEFAULT_TAGS))
-  }
-
-  const deselectAllCombo = () => {
-    setShownTagsCombo(new Set())
-  }
+  const selectAllSingle = () => setShownTagsSingle(new Set(DEFAULT_TAGS))
+  const deselectAllSingle = () => setShownTagsSingle(new Set())
+  const selectAllCombo = () => setShownTagsCombo(new Set(DEFAULT_TAGS))
+  const deselectAllCombo = () => setShownTagsCombo(new Set())
 
   const handleSort = (field) => {
-    if (sortBy === field) {
-      setSortDesc(!sortDesc)
-    } else {
-      setSortBy(field)
-      setSortDesc(true)
-    }
+    if (sortBy === field) setSortDesc(!sortDesc)
+    else { setSortBy(field); setSortDesc(true) }
   }
 
   const handleComboSort = (field) => {
-    if (comboSortBy === field) {
-      setComboSortDesc(!comboSortDesc)
-    } else {
-      setComboSortBy(field)
-      setComboSortDesc(true)
-    }
+    if (comboSortBy === field) setComboSortDesc(!comboSortDesc)
+    else { setComboSortBy(field); setComboSortDesc(true) }
   }
 
   const getSortedStats = () => {
@@ -247,7 +259,6 @@ function App() {
     if (!data || !data.races) return {}
     const scores = {}
     DEFAULT_TAGS.forEach(tag => scores[tag] = 0)
-
     data.races.forEach(race => {
       DEFAULT_TAGS.forEach(tag => {
         const horses = race.tags[tag] || []
@@ -270,13 +281,11 @@ function App() {
 
   const renderHorses = (horses) => {
     if (!horses || horses.length === 0) return <span style={{ display: 'block', lineHeight: '36px' }}>-</span>
-    
     const perLine = 4
     const lines = []
     for (let i = 0; i < horses.length; i += perLine) {
       lines.push(horses.slice(i, i + perLine))
     }
-
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'center', justifyContent: 'center', minHeight: 36 }}>
         {lines.map((line, lineIdx) => (
@@ -364,7 +373,6 @@ function App() {
     for (let i = 0; i < items.length; i += perLine) {
       lines.push(items.slice(i, i + perLine))
     }
-
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'center' }}>
         {lines.map((line, lineIdx) => (
@@ -454,18 +462,21 @@ function App() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h1 style={{ margin: 0, fontSize: '24px', color: '#000000' }}>楊超越！！</h1>
-          <div>
-            <button onClick={goPrev} disabled={idx >= raceDates.length - 1}>上一日</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button onClick={goPrev} disabled={idx >= raceDates.length - 1 || datesLoading}>上一日</button>
             <select 
               value={currentDate} 
               onChange={(e) => setCurrentDate(e.target.value)}
-              style={{ margin: '0 12px', fontSize: 16 }}
+              disabled={datesLoading}
+              style={{ margin: '0 8px', fontSize: 16, minWidth: 140 }}
             >
               {raceDates.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
-            <button onClick={goNext} disabled={idx <= 0}>下一日</button>
+            <button onClick={goNext} disabled={idx <= 0 || datesLoading}>下一日</button>
           </div>
         </div>
+        {datesLoading && <div style={{ textAlign: 'center', fontSize: 13, color: '#666' }}>載入日期中...</div>}
+        {datesError && <div style={{ textAlign: 'center', fontSize: 13, color: '#c00' }}>{datesError}</div>}
       </div>
 
       {loading && <p style={{ textAlign: 'center' }}>載入中...</p>}
