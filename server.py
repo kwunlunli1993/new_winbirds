@@ -525,6 +525,17 @@ def all_combo_rates():
         "combos": []
     })
 
+# ===== 手動觸發 =====
+@app.route('/api/update-rates')
+def manual_update_rates():
+    threading.Thread(target=update_all_rates, daemon=True).start()
+    return jsonify({"status": "updating rates in background"})
+
+@app.route('/api/discover-dates')
+def manual_discover():
+    threading.Thread(target=discover_new_race_days, daemon=True).start()
+    return jsonify({"status": "discovering dates in background"})
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(debug=False, host='0.0.0.0', port=port)
