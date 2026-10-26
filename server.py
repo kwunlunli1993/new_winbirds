@@ -365,7 +365,6 @@ def discover_new_race_days():
             cached = load_day_cache(d)
             if cached is None:
                 result = compute_day_internal(d, force_live=True)
-                # 加強檢查：至少有一場有馬
                 has_real_races = False
                 if result.get("races"):
                     for race in result["races"]:
@@ -470,14 +469,14 @@ def update_all_rates():
                                 combos[key]["top3"] += 1
             result_combos = []
             for tags, s in combos.items():
-                if s["total"] >= 5:
+                if s["total"] >= 1:   # 改成 >= 1
                     result_combos.append({
                         "tags": list(tags),
                         "total": s["total"],
                         "win": s["win"],
                         "top3": s["top3"],
-                        "winRate": round(s["win"] / s["total"] * 100, 1),
-                        "top3Rate": round(s["top3"] / s["total"] * 100, 1),
+                        "winRate": round(s["win"] / s["total"] * 100, 1) if s["total"] > 0 else 0,
+                        "top3Rate": round(s["top3"] / s["total"] * 100, 1) if s["total"] > 0 else 0,
                     })
             result_combos.sort(key=lambda x: -x["winRate"])
             r2_save(f"rate/all_combos_{period}.json", {
