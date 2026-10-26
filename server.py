@@ -376,6 +376,14 @@ def update_all_rates():
         sorted_dates = sorted(list(dates), reverse=True)
 
         for period, (start_str, end_str, label) in PERIODS.items():
+            # 只跳過冇新日子嘅 2526
+            if period == "2526":
+                has_new = any(start_str <= d <= end_str for d in sorted_dates)
+                if not has_new:
+                    print("Skip 2526 (no new days)")
+                    continue
+
+            print(f"Calculating {period}...")
             stats = {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
             for date in sorted_dates:
                 if not (start_str <= date <= end_str):
