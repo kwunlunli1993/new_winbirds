@@ -82,6 +82,7 @@ def r2_save(key, data):
             Body=json.dumps(data, ensure_ascii=False).encode("utf-8"),
             ContentType="application/json",
         )
+        print(f"Saved {key}")
     except Exception as e:
         print(f"R2 save error {key}: {e}")
 
@@ -455,12 +456,14 @@ def update_all_rates():
                     horse_place = {}
                     for tag, horses in race.get("tags", {}).items():
                         for h in horses:
-                            no = h["no"]
-                            horse_tags[no].append(tag)
-                            horse_place[no] = h.get("place", 0)
+                            no = h.get("no")
+                            if no and no > 0:
+                                horse_tags[no].append(tag)
+                                horse_place[no] = h.get("place", 0)
                     for no, tags in horse_tags.items():
-                        if len(tags) >= 2:
-                            key = tuple(sorted(set(tags)))
+                        unique_tags = list(set(tags))
+                        if len(unique_tags) >= 2:
+                            key = tuple(sorted(unique_tags))
                             combos[key]["total"] += 1
                             place = horse_place.get(no, 0)
                             if place == 1:
@@ -469,7 +472,7 @@ def update_all_rates():
                                 combos[key]["top3"] += 1
             result_combos = []
             for tags, s in combos.items():
-                if s["total"] >= 1:   # 改成 >= 1
+                if s["total"] >= 1:
                     result_combos.append({
                         "tags": list(tags),
                         "total": s["total"],
@@ -479,6 +482,7 @@ def update_all_rates():
                         "top3Rate": round(s["top3"] / s["total"] * 100, 1) if s["total"] > 0 else 0,
                     })
             result_combos.sort(key=lambda x: -x["winRate"])
+            print(f"{period} combos count: {len(result_combos)}")
             r2_save(f"rate/all_combos_{period}.json", {
                 "period": period, "label": label, "start": start_str, "end": end_str, "combos": result_combos
             })
