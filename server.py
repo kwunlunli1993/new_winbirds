@@ -130,10 +130,17 @@ def include_in_date_list(date_str, data):
         return False
     today = today_str()
     if date_str > today:
-        return False
+        return True
     if day_has_result(data):
         return True
     return date_str == today
+
+def is_today_or_future(date_str):
+    try:
+        target = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+        return target >= datetime.now().date()
+    except:
+        return False
 
 def call_winbird(endpoint, body="{}", force_live=False):
     cache_key = get_cache_key(endpoint, body)
@@ -189,7 +196,7 @@ def is_valid_horse(h):
         return False
     return True
 
-def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False):
+def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False, history_live=False):
     odds_data = call_winbird("/api/race/getRaceAllOdds", json.dumps(race), force_live=force_live)
     odds = odds_data.get("odds", [])
 
@@ -290,7 +297,7 @@ def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False
             if not is_valid_horse(h):
                 continue
             no = h.get("no")
-            histories = get_horse_history(h, force_live=force_live)
+            histories = get_horse_history(h, force_live=history_live)
             past_races = [rh for rh in histories if rh.get("raceId") != race.get("ID")]
             past_races = past_races[:3]
 
@@ -310,7 +317,7 @@ def analyze_race(race, prev_race_id=None, horses_from_abc=None, force_live=False
 
     return results, {}
 
-def compute_day_internal(date, force_live=False):
+def compute_day_internal(date, force_live=False, history_live=False):
     body = {"date": f"{date}T00:00:00+08:00"}
     races_data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=force_live)
     races = races_data.get("races", [])
@@ -353,7 +360,7 @@ def compute_day_internal(date, force_live=False):
             if prev:
                 prev_id = prev["ID"]
 
-        special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=force_live)
+        special, _ = analyze_race(race, prev_id, horses_by_race.get(race_no, []), force_live=force_live, history_live=history_live)
 
         tags = {}
         for tag_name, nos in iu_by_race.get(race_no, {}).items():
@@ -374,29 +381,99 @@ def compute_day_internal(date, force_live=False):
 
     return {"date": date, "races": result_races, "live": force_live, "matched": True}
 
-def background_refresh(date):
+def content_signature(data):
+    parts = []
+    for race in (data or {}).get("races") or []:
+        items = []
+        for tag, horses in (race.get("tags") or {}).items():
+            for h in horses or []:
+                if isinstance(h, dict):
+                    items.append(f"{tag}:{h.get('no')}:{h.get('place')}")
+        items.sort()
+        parts.append(str(race.get("no")) + "|" + ",".join(items))
+    return "\n".join(parts)
+
+def places_signature(day):
+    parts = []
+    for race in (day or {}).get("races") or []:
+        items = []
+        for horses in (race.get("tags") or {}).values():
+            for h in horses or []:
+                if isinstance(h, dict) and int(h.get("place") or 0) > 0:
+                    items.append(f"{h.get('no')}:{h.get('place')}")
+        items.sort()
+        parts.append(str(race.get("no")) + "|" + ",".join(items))
+    return "\n".join(parts)
+
+refresh_lock = threading.Lock()
+
+def refresh_one_day(date):
+    """只更新一個日期。賠率會重新讀，馬匹歷史用快取。唔掃其他日子。"""
+    if not refresh_lock.acquire(blocking=False):
+        print(f"refresh skipped, busy: {date}")
+        return
     try:
-        result = compute_day_internal(date, force_live=True)
-        if result.get("matched") and result.get("races"):
-            save_day_cache(date, result)
-            print(f"Background refresh done: {date}")
-        else:
-            print(f"Background refresh skipped: {date}")
+        prev = load_day_cache(date)
+        result = compute_day_internal(date, force_live=True, history_live=False)
+        if not (result.get("matched") and result.get("races")):
+            print(f"not a race day: {date}")
+            return
+        save_day_cache(date, result)
+        print(f"refreshed {date}")
+        if day_has_result(result) and places_signature(prev) != places_signature(result):
+            if not update_progress["running"]:
+                print(f"results changed, updating rates: {date}")
+                update_all_rates()
     except Exception as e:
-        print(f"Background refresh error: {e}")
+        print(f"refresh error {date}: {e}")
+    finally:
+        refresh_lock.release()
+
+def background_refresh(date):
+    refresh_one_day(date)
 
 def discover_new_race_days():
-    """只檢查今日。API 日期唔係今日就唔儲。"""
+    find_next_race_day()
+
+def find_next_race_day(max_days=10):
+    """由今日開始，找到下一個真正賽馬日就停。日期對唔上就唔儲。"""
+    if not refresh_lock.acquire(blocking=False):
+        print("refresh skipped, busy")
+        return None
     try:
-        d = today_str()
-        result = compute_day_internal(d, force_live=True)
-        if result.get("matched") and result.get("races"):
+        start = datetime.now().date()
+        for i in range(0, max_days + 1):
+            d = (start + timedelta(days=i)).strftime("%Y-%m-%d")
+            prev = load_day_cache(d)
+            result = compute_day_internal(d, force_live=True, history_live=False)
+            if not (result.get("matched") and result.get("races")):
+                print(f"not a race day: {d}")
+                continue
             save_day_cache(d, result)
-            print(f"Saved race day: {d}")
-        else:
-            print(f"Skip empty day: {d}")
+            print(f"next race day: {d}")
+            if day_has_result(result) and places_signature(prev) != places_signature(result):
+                if not update_progress["running"]:
+                    print(f"results changed, updating rates: {d}")
+                    update_all_rates()
+            return d
+        print("no race day in the next window")
+        return None
     except Exception as e:
-        print("discover error:", e)
+        print("find next error:", e)
+        return None
+    finally:
+        refresh_lock.release()
+
+def background_jobs():
+    time.sleep(30)
+    while True:
+        try:
+            find_next_race_day()
+        except Exception as e:
+            print("scheduled refresh error:", e)
+        time.sleep(900)
+
+threading.Thread(target=background_jobs, daemon=True).start()
 
 def update_all_rates():
     try:
@@ -404,7 +481,7 @@ def update_all_rates():
         set_progress(5, "正在掃描日子...")
         print("Updating rates...")
 
-        dates = set()
+        found = []
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
             for obj in page.get("Contents", []):
@@ -414,9 +491,13 @@ def update_all_rates():
                     if len(date_str) == 10:
                         data = r2_load(key)
                         if include_in_date_list(date_str, data) and day_has_result(data):
-                            dates.add(date_str)
+                            found.append((date_str, content_signature(data)))
 
-        sorted_dates = sorted(list(dates), reverse=True)
+        kept = {}
+        for date_str, sig in found:
+            if sig not in kept or date_str < kept[sig]:
+                kept[sig] = date_str
+        sorted_dates = sorted(kept.values(), reverse=True)
         set_progress(15, f"找到 {len(sorted_dates)} 個賽馬日")
 
         total_periods = len(PERIODS)
@@ -544,11 +625,11 @@ def day_tags():
     date = request.args.get('date', '2026-10-21')
     cached_result = load_day_cache(date)
     if cached_result is not None and cached_result.get("races"):
-        if is_today(date):
+        if is_today_or_future(date):
             threading.Thread(target=background_refresh, args=(date,), daemon=True).start()
         return jsonify(cached_result)
 
-    live = is_today(date)
+    live = is_today_or_future(date)
     result = compute_day_internal(date, force_live=live)
     if result.get("matched") and result.get("races"):
         save_day_cache(date, result)
@@ -556,7 +637,7 @@ def day_tags():
 
 @app.route('/api/race-dates')
 def race_dates():
-    dates = set()
+    found = []
     try:
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
@@ -567,11 +648,15 @@ def race_dates():
                     if len(date_str) == 10 and date_str.count("-") == 2:
                         data = r2_load(key)
                         if include_in_date_list(date_str, data):
-                            dates.add(date_str)
+                            found.append((date_str, content_signature(data)))
     except Exception as e:
         print("scan dates error:", e)
 
-    return jsonify({"dates": sorted(list(dates), reverse=True)})
+    kept = {}
+    for date_str, sig in found:
+        if sig not in kept or date_str < kept[sig]:
+            kept[sig] = date_str
+    return jsonify({"dates": sorted(kept.values(), reverse=True)})
 
 @app.route('/api/tag-rates')
 def tag_rates():
