@@ -427,17 +427,16 @@ def background_discover_loop():
 
 threading.Thread(target=background_discover_loop, daemon=True).start()
 
-# ========== 輕量計勝率（只讀已有 day 檔，唔 call API）==========
+# ========== 安全手動更新勝率（只喺你 call 先會跑）==========
 def background_update_rates(period):
     try:
-        print(f"[Rates] 輕量更新 {period}")
+        print(f"[Rates] 手動更新 {period}")
         start_str, end_str, label = PERIODS[period]
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
 
         stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
 
-        # 只 list 一次，然後逐個讀
         dates = []
         try:
             paginator = s3.get_paginator("list_objects_v2")
@@ -472,7 +471,7 @@ def background_update_rates(period):
                             stats[tag]["win"] += 1
                         if 1 <= place <= 3:
                             stats[tag]["top3"] += 1
-            if (i + 1) % 20 == 0:
+            if (i + 1) % 10 == 0:
                 print(f"[Rates] 已處理 {i+1}/{len(dates)}")
 
         result = {}
@@ -501,7 +500,7 @@ def background_update_rates(period):
 
 def background_update_combos(period):
     try:
-        print(f"[Combos] 輕量更新 {period}")
+        print(f"[Combos] 手動更新 {period}")
         start_str, end_str, label = PERIODS[period]
         start_date = datetime.strptime(start_str, "%Y-%m-%d")
         end_date = datetime.strptime(end_str, "%Y-%m-%d")
@@ -638,9 +637,6 @@ def tag_rates():
     cache_key = f"rate/rates_{period}.json"
     cached = r2_load(cache_key)
 
-    # 輕量更新（只讀已有檔）
-    threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
-
     if cached is not None:
         return jsonify(cached)
 
@@ -663,8 +659,6 @@ def all_combo_rates():
     cache_key = f"rate/all_combos_{period}.json"
     cached = r2_load(cache_key)
 
-    threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
-
     if cached is not None:
         return jsonify(cached)
 
@@ -677,6 +671,17 @@ def all_combo_rates():
         "combos": []
     }
     return jsonify(output)
+
+@app.route('/api/update-rates')
+def update_rates():
+    period = request.args.get('period', '2509now')
+    if period not in PERIODS:
+        period = '2509now'
+
+    threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
+    threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
+
+    return jsonify({"status": "updating", "period": period})
 
 @app.route('/api/clear-dates')
 def clear_dates():
