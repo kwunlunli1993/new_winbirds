@@ -12,6 +12,7 @@ from itertools import combinations
 import boto3
 from botocore.exceptions import ClientError
 import threading
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -351,33 +352,70 @@ def background_refresh(date):
     except Exception as e:
         print(f"Background refresh error: {e}")
 
+def get_official_race_dates():
+    """從香港賽馬會官方賽期表抓取真正有賽事的日期"""
+    dates = set()
+    try:
+        # 抓取今個月同下個月
+        now = datetime.now()
+        for month_offset in range(0, 2):
+            year = now.year
+            month = now.month + month_offset
+            if month > 12:
+                month -= 12
+                year += 1
+            url = f"https://racing.hkjc.com/zh-hk/local/information/fixture?calyear={year}&calmonth={month}"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            # 搵有賽事嘅日子（有 "田" 或 "谷" 標記 + 數字日期）
+            # 簡單做法：搵所有 YYYY-MM-DD 格式，再驗證
+            pattern = r'(\d{4})-(\d{2})-(\d{2})'
+            for m in re.finditer(pattern, html):
+                y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if y == year and mo == month:
+                    date_str = f"{y}-{mo:02d}-{d:02d}"
+                    dates.add(date_str)
+    except Exception as e:
+        print(f"[Official] 抓取賽期表失敗: {e}")
+    return dates
+
 def discover_new_dates():
-    """檢查今日到未來 14 日有冇新賽事，有就加入 dates_cache"""
-    print("[Discover] 開始檢查新賽日...")
+    """只加入官方賽期表有賽事、而且唔係太遠未來嘅日期"""
+    print("[Discover] 開始檢查官方賽期表...")
     existing = load_dates_cache() or {"dates": []}
     existing_set = set(existing.get("dates", []))
-    new_found = False
 
-    today = datetime.now()
-    for i in range(0, 14):
-        d = (today + timedelta(days=i)).strftime("%Y-%m-%d")
-        if d in existing_set:
-            continue
-        body = {"date": f"{d}T00:00:00+08:00"}
-        data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
-        races = data.get("races", [])
-        if races and len(races) > 0:
-            existing_set.add(d)
-            new_found = True
-            print(f"[Discover] 發現新賽日: {d}")
-            # 預先計算 day 快取
-            if load_day_cache(d) is None:
-                try:
-                    result = compute_day_internal(d, force_live=False)
-                    save_day_cache(d, result)
-                    print(f"[Discover] 已預先計算 {d}")
-                except Exception as e:
-                    print(f"[Discover] 計算 {d} 失敗: {e}")
+    official_dates = get_official_race_dates()
+    today = datetime.now().date()
+    # 只容許到下一個賽馬日（或者今日之後 7 日內）
+    max_future = today + timedelta(days=7)
+
+    new_found = False
+    for d_str in official_dates:
+        try:
+            d = datetime.strptime(d_str, "%Y-%m-%d").date()
+            if d > max_future:
+                continue
+            if d_str in existing_set:
+                continue
+            # 確認 Winbird 真係有呢日數據
+            body = {"date": f"{d_str}T00:00:00+08:00"}
+            data = call_winbird("/api/race/getRaces", json.dumps(body), force_live=False)
+            races = data.get("races", [])
+            if races and len(races) > 0:
+                existing_set.add(d_str)
+                new_found = True
+                print(f"[Discover] 加入官方賽日: {d_str}")
+                if load_day_cache(d_str) is None:
+                    try:
+                        result = compute_day_internal(d_str, force_live=False)
+                        save_day_cache(d_str, result)
+                    except Exception as e:
+                        print(f"[Discover] 計算 {d_str} 失敗: {e}")
+        except Exception as e:
+            print(f"[Discover] 處理 {d_str} 錯誤: {e}")
 
     if new_found:
         result = {"dates": sorted(list(existing_set), reverse=True)}
@@ -387,7 +425,6 @@ def discover_new_dates():
         print("[Discover] 冇新賽日")
 
 def background_discover_loop():
-    """每 2 小時自動檢查一次"""
     while True:
         try:
             discover_new_dates()
@@ -395,7 +432,6 @@ def background_discover_loop():
             print(f"[Background Discover] 錯誤: {e}")
         time.sleep(2 * 60 * 60)
 
-# 啟動背景自動檢查
 threading.Thread(target=background_discover_loop, daemon=True).start()
 
 @app.route('/api/day-tags')
@@ -415,7 +451,6 @@ def day_tags():
 
 @app.route('/api/race-dates')
 def race_dates():
-    # 每次有人開網站都順便檢查一次（快，因為有快取）
     try:
         discover_new_dates()
     except Exception as e:
