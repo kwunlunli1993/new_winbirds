@@ -2,13 +2,14 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import json
 import os
 import hashlib
 import boto3
 import threading
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -341,6 +342,123 @@ def background_refresh(date):
     except Exception as e:
         print(f"Background refresh error: {e}")
 
+def discover_new_race_days():
+    """掃最近10日 + 未來5日"""
+    try:
+        today = datetime.now().date()
+        for i in range(-5, 11):
+            d = (today + timedelta(days=i)).strftime("%Y-%m-%d")
+            cached = load_day_cache(d)
+            if cached is None:
+                print(f"Discovering new day: {d}")
+                result = compute_day_internal(d, force_live=True)
+                if result.get("races"):
+                    save_day_cache(d, result)
+                    print(f"Saved new day: {d}")
+    except Exception as e:
+        print("discover error:", e)
+
+def update_all_rates():
+    """每60分鐘更新一次勝率"""
+    try:
+        print("Updating rates...")
+        dates = set()
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith(".json"):
+                    date_str = key.replace("day/", "").replace(".json", "")
+                    if len(date_str) == 10:
+                        dates.add(date_str)
+
+        sorted_dates = sorted(list(dates), reverse=True)
+
+        for period, (start_str, end_str, label) in PERIODS.items():
+            # 單tag
+            stats = {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
+            for date in sorted_dates:
+                if not (start_str <= date <= end_str):
+                    continue
+                day = load_day_cache(date)
+                if not day or not day.get("races"):
+                    continue
+                for race in day["races"]:
+                    for tag, horses in race.get("tags", {}).items():
+                        if tag not in stats:
+                            continue
+                        for h in horses:
+                            place = h.get("place", 0)
+                            stats[tag]["total"] += 1
+                            if place == 1:
+                                stats[tag]["win"] += 1
+                            if 1 <= place <= 3:
+                                stats[tag]["top3"] += 1
+            for tag in stats:
+                t = stats[tag]["total"]
+                if t > 0:
+                    stats[tag]["winRate"] = round(stats[tag]["win"] / t * 100, 1)
+                    stats[tag]["top3Rate"] = round(stats[tag]["top3"] / t * 100, 1)
+            r2_save(f"rate/rates_{period}.json", {
+                "period": period, "label": label, "start": start_str, "end": end_str, "stats": stats
+            })
+
+            # 2tags
+            combos = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+            for date in sorted_dates:
+                if not (start_str <= date <= end_str):
+                    continue
+                day = load_day_cache(date)
+                if not day or not day.get("races"):
+                    continue
+                for race in day["races"]:
+                    horse_tags = defaultdict(list)
+                    horse_place = {}
+                    for tag, horses in race.get("tags", {}).items():
+                        for h in horses:
+                            no = h["no"]
+                            horse_tags[no].append(tag)
+                            horse_place[no] = h.get("place", 0)
+                    for no, tags in horse_tags.items():
+                        if len(tags) >= 2:
+                            key = tuple(sorted(set(tags)))
+                            combos[key]["total"] += 1
+                            place = horse_place.get(no, 0)
+                            if place == 1:
+                                combos[key]["win"] += 1
+                            if 1 <= place <= 3:
+                                combos[key]["top3"] += 1
+            result_combos = []
+            for tags, s in combos.items():
+                if s["total"] >= 5:
+                    result_combos.append({
+                        "tags": list(tags),
+                        "total": s["total"],
+                        "win": s["win"],
+                        "top3": s["top3"],
+                        "winRate": round(s["win"] / s["total"] * 100, 1),
+                        "top3Rate": round(s["top3"] / s["total"] * 100, 1),
+                    })
+            result_combos.sort(key=lambda x: -x["winRate"])
+            r2_save(f"rate/all_combos_{period}.json", {
+                "period": period, "label": label, "start": start_str, "end": end_str, "combos": result_combos
+            })
+        print("Rates update done")
+    except Exception as e:
+        print("update rates error:", e)
+
+def background_jobs():
+    while True:
+        try:
+            discover_new_race_days()
+            update_all_rates()
+        except Exception as e:
+            print("background job error:", e)
+        time.sleep(900)  # 15 分鐘
+
+# 啟動背景任務
+threading.Thread(target=background_jobs, daemon=True).start()
+
 @app.route('/api/day-tags')
 def day_tags():
     date = request.args.get('date', '2026-10-21')
@@ -366,15 +484,13 @@ def race_dates():
                 if key.endswith(".json"):
                     date_str = key.replace("day/", "").replace(".json", "")
                     if len(date_str) == 10 and date_str.count("-") == 2:
-                        # 只加真係有內容嘅日期
                         data = r2_load(key)
                         if data and data.get("races") and len(data["races"]) > 0:
                             dates.add(date_str)
     except Exception as e:
         print("scan dates error:", e)
 
-    result = {"dates": sorted(list(dates), reverse=True)}
-    return jsonify(result)
+    return jsonify({"dates": sorted(list(dates), reverse=True)})
 
 @app.route('/api/tag-rates')
 def tag_rates():
