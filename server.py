@@ -427,53 +427,60 @@ def background_discover_loop():
 
 threading.Thread(target=background_discover_loop, daemon=True).start()
 
-# ========== 安全手動更新勝率（一次過更新所有 period）==========
-def background_update_rates(period):
+# ========== 安全分批更新勝率（每次只處理 8 日）==========
+def get_period_dates(period):
+    start_str, end_str, _ = PERIODS[period]
+    start_date = datetime.strptime(start_str, "%Y-%m-%d")
+    end_date = datetime.strptime(end_str, "%Y-%m-%d")
+    dates = []
     try:
-        print(f"[Rates] 手動更新 {period}")
-        start_str, end_str, label = PERIODS[period]
-        start_date = datetime.strptime(start_str, "%Y-%m-%d")
-        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith(".json"):
+                    date_str = key.replace("day/", "").replace(".json", "")
+                    try:
+                        race_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if start_date <= race_date <= end_date:
+                            dates.append(date_str)
+                    except:
+                        pass
+    except Exception as e:
+        print(f"list dates error: {e}")
+    return sorted(set(dates))
 
-        stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+def process_rates_batch(period, batch_size=8):
+    dates = get_period_dates(period)
+    if not dates:
+        return {"done": True, "processed": 0}
 
-        dates = []
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    if key.endswith(".json"):
-                        date_str = key.replace("day/", "").replace(".json", "")
-                        try:
-                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                            if start_date <= race_date <= end_date:
-                                dates.append(date_str)
-                        except:
-                            pass
-        except Exception as e:
-            print(f"[Rates] list error: {e}")
-            return
+    progress_key = f"rate/progress_{period}.json"
+    progress = r2_load(progress_key) or {"last_index": 0, "stats": {}}
+    start_idx = progress.get("last_index", 0)
+    stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0}, progress.get("stats", {}))
 
-        dates = sorted(set(dates))
-        print(f"[Rates] {period} 共 {len(dates)} 日")
+    end_idx = min(start_idx + batch_size, len(dates))
+    batch = dates[start_idx:end_idx]
 
-        for i, date_str in enumerate(dates):
-            data = load_day_cache(date_str)
-            if not data or "races" not in data:
-                continue
-            for race in data["races"]:
-                for tag, horses in race.get("tags", {}).items():
-                    for h in horses:
-                        stats[tag]["total"] += 1
-                        place = h.get("place", 0)
-                        if place == 1:
-                            stats[tag]["win"] += 1
-                        if 1 <= place <= 3:
-                            stats[tag]["top3"] += 1
-            if (i + 1) % 10 == 0:
-                print(f"[Rates] 已處理 {i+1}/{len(dates)}")
+    for date_str in batch:
+        data = load_day_cache(date_str)
+        if not data or "races" not in data:
+            continue
+        for race in data["races"]:
+            for tag, horses in race.get("tags", {}).items():
+                for h in horses:
+                    stats[tag]["total"] += 1
+                    place = h.get("place", 0)
+                    if place == 1:
+                        stats[tag]["win"] += 1
+                    if 1 <= place <= 3:
+                        stats[tag]["top3"] += 1
 
+    new_progress = {"last_index": end_idx, "stats": dict(stats)}
+    r2_save(progress_key, new_progress)
+
+    if end_idx >= len(dates):
         result = {}
         for tag in ALL_TAGS:
             s = stats.get(tag, {"total": 0, "win": 0, "top3": 0})
@@ -485,7 +492,7 @@ def background_update_rates(period):
                 "winRate": round(s["win"] / total * 100, 1) if total else 0,
                 "top3Rate": round(s["top3"] / total * 100, 1) if total else 0,
             }
-
+        start_str, end_str, label = PERIODS[period]
         output = {
             "period": period,
             "label": label,
@@ -494,66 +501,55 @@ def background_update_rates(period):
             "stats": result
         }
         r2_save(f"rate/rates_{period}.json", output)
-        print(f"[Rates] {period} 更新完成")
-    except Exception as e:
-        print(f"[Rates] 更新失敗: {e}")
+        return {"done": True, "processed": end_idx, "total": len(dates)}
 
-def background_update_combos(period):
-    try:
-        print(f"[Combos] 手動更新 {period}")
-        start_str, end_str, label = PERIODS[period]
-        start_date = datetime.strptime(start_str, "%Y-%m-%d")
-        end_date = datetime.strptime(end_str, "%Y-%m-%d")
+    return {"done": False, "processed": end_idx, "total": len(dates)}
 
-        pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0})
+def process_combos_batch(period, batch_size=8):
+    dates = get_period_dates(period)
+    if not dates:
+        return {"done": True, "processed": 0}
 
-        dates = []
-        try:
-            paginator = s3.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
-                for obj in page.get("Contents", []):
-                    key = obj["Key"]
-                    if key.endswith(".json"):
-                        date_str = key.replace("day/", "").replace(".json", "")
-                        try:
-                            race_date = datetime.strptime(date_str, "%Y-%m-%d")
-                            if start_date <= race_date <= end_date:
-                                dates.append(date_str)
-                        except:
-                            pass
-        except:
-            return
+    progress_key = f"rate/combo_progress_{period}.json"
+    progress = r2_load(progress_key) or {"last_index": 0, "pair_stats": {}}
+    start_idx = progress.get("last_index", 0)
+    pair_stats = defaultdict(lambda: {"total": 0, "win": 0, "top3": 0}, progress.get("pair_stats", {}))
 
-        dates = sorted(set(dates))
+    end_idx = min(start_idx + batch_size, len(dates))
+    batch = dates[start_idx:end_idx]
 
-        for date_str in dates:
-            data = load_day_cache(date_str)
-            if not data or "races" not in data:
-                continue
-            for race in data["races"]:
-                tags = race.get("tags", {})
-                horse_tags = defaultdict(set)
-                for tag_name, horses in tags.items():
-                    for h in horses:
-                        horse_tags[h["no"]].add(tag_name)
+    for date_str in batch:
+        data = load_day_cache(date_str)
+        if not data or "races" not in data:
+            continue
+        for race in data["races"]:
+            tags = race.get("tags", {})
+            horse_tags = defaultdict(set)
+            for tag_name, horses in tags.items():
+                for h in horses:
+                    horse_tags[h["no"]].add(tag_name)
 
-                for no, tag_set in horse_tags.items():
-                    place = 0
-                    for t, hs in tags.items():
-                        for h in hs:
-                            if h["no"] == no:
-                                place = h.get("place", 0)
-                                break
-                    if place <= 0:
-                        continue
-                    for t1, t2 in combinations(sorted(tag_set), 2):
-                        key = f"{t1}|{t2}"
-                        pair_stats[key]["total"] += 1
-                        if place == 1:
-                            pair_stats[key]["win"] += 1
-                        if place <= 3:
-                            pair_stats[key]["top3"] += 1
+            for no, tag_set in horse_tags.items():
+                place = 0
+                for t, hs in tags.items():
+                    for h in hs:
+                        if h["no"] == no:
+                            place = h.get("place", 0)
+                            break
+                if place <= 0:
+                    continue
+                for t1, t2 in combinations(sorted(tag_set), 2):
+                    key = f"{t1}|{t2}"
+                    pair_stats[key]["total"] += 1
+                    if place == 1:
+                        pair_stats[key]["win"] += 1
+                    if place <= 3:
+                        pair_stats[key]["top3"] += 1
 
+    new_progress = {"last_index": end_idx, "pair_stats": dict(pair_stats)}
+    r2_save(progress_key, new_progress)
+
+    if end_idx >= len(dates):
         combos = []
         for key, s in pair_stats.items():
             t1, t2 = key.split("|")
@@ -568,7 +564,7 @@ def background_update_combos(period):
                 "top3Rate": round(s["top3"] / total * 100, 1) if total > 0 else 0
             })
         combos.sort(key=lambda x: -x["winRate"])
-
+        start_str, end_str, label = PERIODS[period]
         output = {
             "period": period,
             "label": label,
@@ -577,9 +573,9 @@ def background_update_combos(period):
             "combos": combos
         }
         r2_save(f"rate/all_combos_{period}.json", output)
-        print(f"[Combos] {period} 更新完成")
-    except Exception as e:
-        print(f"[Combos] 更新失敗: {e}")
+        return {"done": True, "processed": end_idx, "total": len(dates)}
+
+    return {"done": False, "processed": end_idx, "total": len(dates)}
 
 @app.route('/api/day-tags')
 def day_tags():
@@ -674,11 +670,19 @@ def all_combo_rates():
 
 @app.route('/api/update-rates')
 def update_rates():
-    for period in PERIODS.keys():
-        threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
-        threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
+    period = request.args.get('period', '2509now')
+    if period not in PERIODS:
+        period = '2509now'
 
-    return jsonify({"status": "updating", "periods": list(PERIODS.keys())})
+    rates_result = process_rates_batch(period, batch_size=8)
+    combos_result = process_combos_batch(period, batch_size=8)
+
+    return jsonify({
+        "status": "ok",
+        "period": period,
+        "rates": rates_result,
+        "combos": combos_result
+    })
 
 @app.route('/api/clear-dates')
 def clear_dates():
