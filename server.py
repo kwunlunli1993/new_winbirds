@@ -52,7 +52,7 @@ ALL_TAGS = [
 ]
 
 PERIODS = {
-    "2526": ("2025-09-01", "2026-07-31", "2025-2026馬季"),
+    "2526": ("2025-09-01", "2026-08-31", "2025-2026馬季"),
     "2609now": ("2026-09-01", "2026-12-31", "2026年9月至今"),
     "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
 }
@@ -427,7 +427,7 @@ def background_discover_loop():
 
 threading.Thread(target=background_discover_loop, daemon=True).start()
 
-# ========== 安全手動更新勝率（只喺你 call 先會跑）==========
+# ========== 安全手動更新勝率（一次過更新所有 period）==========
 def background_update_rates(period):
     try:
         print(f"[Rates] 手動更新 {period}")
@@ -674,14 +674,11 @@ def all_combo_rates():
 
 @app.route('/api/update-rates')
 def update_rates():
-    period = request.args.get('period', '2509now')
-    if period not in PERIODS:
-        period = '2509now'
+    for period in PERIODS.keys():
+        threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
+        threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
 
-    threading.Thread(target=background_update_rates, args=(period,), daemon=True).start()
-    threading.Thread(target=background_update_combos, args=(period,), daemon=True).start()
-
-    return jsonify({"status": "updating", "period": period})
+    return jsonify({"status": "updating", "periods": list(PERIODS.keys())})
 
 @app.route('/api/clear-dates')
 def clear_dates():
