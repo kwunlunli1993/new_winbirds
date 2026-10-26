@@ -40,6 +40,19 @@ TARGET_TAGS = {
     "欣欣杯": "欣欣杯",
 }
 
+ALL_TAGS = [
+    "A類馬", "B類馬", "C類馬", "D類馬", "E類馬",
+    "鬼鼠馬", "賺住贏", "欣欣杯",
+    "指數哥", "隔夜哥", "孖寶哥", "三橙俠", "古惑飛",
+    "近3指數90", "近3跌30"
+]
+
+PERIODS = {
+    "2526": ("2025-09-01", "2026-08-31", "2025-2026馬季"),
+    "2609now": ("2026-09-01", "2026-12-31", "2026年9月至今"),
+    "2509now": ("2025-09-01", "2026-12-31", "2025年9月至今"),
+}
+
 def r2_load(key):
     try:
         obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
@@ -352,13 +365,50 @@ def race_dates():
                 key = obj["Key"]
                 if key.endswith(".json"):
                     date_str = key.replace("day/", "").replace(".json", "")
-                    if len(date_str) == 10:
-                        dates.add(date_str)
+                    if len(date_str) == 10 and date_str.count("-") == 2:
+                        # 只加真係有內容嘅日期
+                        data = r2_load(key)
+                        if data and data.get("races") and len(data["races"]) > 0:
+                            dates.add(date_str)
     except Exception as e:
         print("scan dates error:", e)
 
     result = {"dates": sorted(list(dates), reverse=True)}
     return jsonify(result)
+
+@app.route('/api/tag-rates')
+def tag_rates():
+    period = request.args.get('period', '2509now')
+    if period not in PERIODS:
+        period = '2509now'
+    cached = r2_load(f"rate/rates_{period}.json")
+    if cached is not None:
+        return jsonify(cached)
+    start_str, end_str, label = PERIODS[period]
+    return jsonify({
+        "period": period,
+        "label": label,
+        "start": start_str,
+        "end": end_str,
+        "stats": {tag: {"total": 0, "win": 0, "top3": 0, "winRate": 0, "top3Rate": 0} for tag in ALL_TAGS}
+    })
+
+@app.route('/api/all-combo-rates')
+def all_combo_rates():
+    period = request.args.get('period', '2509now')
+    if period not in PERIODS:
+        period = '2509now'
+    cached = r2_load(f"rate/all_combos_{period}.json")
+    if cached is not None:
+        return jsonify(cached)
+    start_str, end_str, label = PERIODS[period]
+    return jsonify({
+        "period": period,
+        "label": label,
+        "start": start_str,
+        "end": end_str,
+        "combos": []
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
