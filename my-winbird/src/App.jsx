@@ -456,6 +456,7 @@ function App() {
 
   const displayTags = getDisplayTags()
   const tagScores = getTagScores()
+  const tagPlaceCounts = getTagPlaceCounts()
   const races = data?.races || []
   const sortedTagsForCheckboxes = getSortedTagsForCheckboxes()
 
@@ -542,7 +543,7 @@ function App() {
             <div ref={topTableRef} style={{ overflowX: 'auto', userSelect: 'none' }}>
               <table cellPadding="6" style={{ borderCollapse: 'collapse', fontSize: 14, tableLayout: 'fixed', width: 'max-content', background: '#ffffff', border: '1px solid #000' }}>
                 <colgroup>
-                  <col style={{ width: 90 }} />
+                  <col style={{ width: 110 }} />
                   {data.races.map(race => (
                     <col key={race.no} style={{ width: 105 }} />
                   ))}
@@ -563,6 +564,11 @@ function App() {
                         {tagSortMode === "score" && (
                           <div style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>
                             {tagScores[tag] || 0}分
+                          </div>
+                        )}
+                        {tagSortMode === "win" && (
+                          <div style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>
+                            {(tagPlaceCounts[tag]?.[1] || 0)}-{(tagPlaceCounts[tag]?.[2] || 0)}-{(tagPlaceCounts[tag]?.[3] || 0)}-{(tagPlaceCounts[tag]?.[4] || 0)}
                           </div>
                         )}
                       </td>
