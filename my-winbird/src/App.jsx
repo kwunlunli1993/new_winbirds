@@ -277,10 +277,37 @@ function App() {
     return scores
   }
 
+  const getTagPlaceCounts = () => {
+    const counts = {}
+    DEFAULT_TAGS.forEach(tag => { counts[tag] = { 1: 0, 2: 0, 3: 0, 4: 0 } })
+    if (!data || !data.races) return counts
+    data.races.forEach(race => {
+      DEFAULT_TAGS.forEach(tag => {
+        const horses = race.tags[tag] || []
+        horses.forEach(h => {
+          const place = Number(h.place) || 0
+          if (place >= 1 && place <= 4) counts[tag][place] += 1
+        })
+      })
+    })
+    return counts
+  }
+
   const getDisplayTags = () => {
     if (tagSortMode === "score") {
       const scores = getTagScores()
       return [...DEFAULT_TAGS].sort((a, b) => (scores[b] || 0) - (scores[a] || 0))
+    }
+    if (tagSortMode === "win") {
+      const counts = getTagPlaceCounts()
+      return [...DEFAULT_TAGS].sort((a, b) => {
+        const ca = counts[a]
+        const cb = counts[b]
+        for (const place of [1, 2, 3, 4]) {
+          if (cb[place] !== ca[place]) return cb[place] - ca[place]
+        }
+        return 0
+      })
     }
     return DEFAULT_TAGS
   }
@@ -504,6 +531,12 @@ function App() {
                 style={{ fontWeight: tagSortMode === "score" ? 'bold' : 'normal' }}
               >
                 分數排序
+              </button>
+              <button 
+                onClick={() => setTagSortMode("win")}
+                style={{ fontWeight: tagSortMode === "win" ? 'bold' : 'normal' }}
+              >
+                獨贏排序
               </button>
             </div>
             <div ref={topTableRef} style={{ overflowX: 'auto', userSelect: 'none' }}>
