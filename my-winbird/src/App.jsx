@@ -105,21 +105,27 @@ function App() {
 
   useEffect(() => {
     if (!currentDate) return
-    setLoading(true)
-    fetch(`${API_BASE}/api/day-tags?date=${currentDate}`)
-      .then(r => r.json())
-      .then(json => setData(json))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false))
+    let cancelled = false
+    const today = new Date()
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    const watchResults = currentDate >= todayStr
 
-    const timer = setInterval(() => {
+    const loadDay = (first) => {
+      if (first) setLoading(true)
       fetch(`${API_BASE}/api/day-tags?date=${currentDate}`)
         .then(r => r.json())
-        .then(json => setData(json))
-        .catch(() => {})
-    }, 5 * 60 * 1000)
+        .then(json => { if (!cancelled) setData(json) })
+        .catch(() => { if (first && !cancelled) setData(null) })
+        .finally(() => { if (first && !cancelled) setLoading(false) })
+    }
 
-    return () => clearInterval(timer)
+    loadDay(true)
+    if (!watchResults) return () => { cancelled = true }
+    const timer = setInterval(() => loadDay(false), 20000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
   }, [currentDate])
 
   useEffect(() => {
