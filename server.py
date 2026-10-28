@@ -410,6 +410,27 @@ def places_signature(day):
     return "\n".join(parts)
 
 refresh_lock = threading.Lock()
+rates_followup = {"again": False}
+
+def queue_rates_update(date, prev, result):
+    """名次檔已經儲低。勝率喺後面計，唔好擋住顏色。"""
+    if not day_has_result(result):
+        return
+    if places_signature(prev) == places_signature(result):
+        return
+    if update_progress["running"]:
+        rates_followup["again"] = True
+        print(f"colors saved, rates will rerun: {date}")
+        return
+    print(f"colors saved, calculating rates: {date}")
+    threading.Thread(target=run_rates_then_followup, daemon=True).start()
+
+def run_rates_then_followup():
+    while True:
+        rates_followup["again"] = False
+        update_all_rates()
+        if not rates_followup["again"]:
+            break
 
 def refresh_one_day(date):
     """只更新一個日期。賠率會重新讀，馬匹歷史用快取。唔掃其他日子。"""
@@ -424,10 +445,7 @@ def refresh_one_day(date):
             return
         save_day_cache(date, result)
         print(f"refreshed {date}")
-        if day_has_result(result) and places_signature(prev) != places_signature(result):
-            if not update_progress["running"]:
-                print(f"results changed, updating rates: {date}")
-                update_all_rates()
+        queue_rates_update(date, prev, result)
     except Exception as e:
         print(f"refresh error {date}: {e}")
     finally:
@@ -455,10 +473,7 @@ def find_next_race_day(max_days=10):
                 continue
             save_day_cache(d, result)
             print(f"next race day: {d}")
-            if day_has_result(result) and places_signature(prev) != places_signature(result):
-                if not update_progress["running"]:
-                    print(f"results changed, updating rates: {d}")
-                    update_all_rates()
+            queue_rates_update(d, prev, result)
             return d
         print("no race day in the next window")
         return None
@@ -772,7 +787,7 @@ def get_update_progress():
 def manual_update_rates():
     if update_progress["running"]:
         return jsonify({"status": "already running", "progress": update_progress})
-    threading.Thread(target=update_all_rates, daemon=True).start()
+    threading.Thread(target=run_rates_then_followup, daemon=True).start()
     return jsonify({"status": "automatic; started one now"})
 
 @app.route('/api/discover-dates')
