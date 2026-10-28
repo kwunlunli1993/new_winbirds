@@ -100,6 +100,10 @@ def load_day_cache(date):
 
 def save_day_cache(date, data):
     r2_save(f"day/{date}.json", data)
+    try:
+        touch_date_index(date, data)
+    except Exception as e:
+        print("date index update error:", e)
 
 def make_machine_header():
     now = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -471,7 +475,8 @@ def background_jobs():
             find_next_race_day()
         except Exception as e:
             print("scheduled refresh error:", e)
-        time.sleep(900)
+        time.sleep(300)
+
 
 threading.Thread(target=background_jobs, daemon=True).start()
 
@@ -635,28 +640,89 @@ def day_tags():
         save_day_cache(date, result)
     return jsonify(result)
 
-@app.route('/api/race-dates')
-def race_dates():
-    found = []
+DATE_INDEX_KEY = "meta/race-dates.json"
+_dates_mem = {"dates": None, "at": 0}
+date_index_lock = threading.Lock()
+
+def dates_from_items(items):
+    kept = {}
+    for date_str, sig in items:
+        if sig not in kept or date_str < kept[sig]:
+            kept[sig] = date_str
+    return sorted(kept.values(), reverse=True)
+
+def list_day_filenames():
+    dates = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            if not key.endswith(".json"):
+                continue
+            date_str = key.replace("day/", "").replace(".json", "")
+            if len(date_str) == 10 and date_str.count("-") == 2:
+                dates.append(date_str)
+    return sorted(set(dates), reverse=True)
+
+def save_date_index(items):
+    by_date = {}
+    for date_str, sig in items:
+        by_date[date_str] = sig
+    dates = dates_from_items(list(by_date.items()))
+    r2_save(DATE_INDEX_KEY, {
+        "items": [{"date": d, "sig": s} for d, s in sorted(by_date.items())],
+        "dates": dates,
+    })
+    _dates_mem["dates"] = dates
+    _dates_mem["at"] = time.time()
+    return dates
+
+def rebuild_date_index():
+    if not date_index_lock.acquire(blocking=False):
+        print("date index rebuild skipped, busy")
+        return
     try:
+        print("rebuilding date index...")
+        found = []
         paginator = s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=R2_BUCKET, Prefix="day/"):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
-                if key.endswith(".json"):
-                    date_str = key.replace("day/", "").replace(".json", "")
-                    if len(date_str) == 10 and date_str.count("-") == 2:
-                        data = r2_load(key)
-                        if include_in_date_list(date_str, data):
-                            found.append((date_str, content_signature(data)))
+                if not key.endswith(".json"):
+                    continue
+                date_str = key.replace("day/", "").replace(".json", "")
+                if len(date_str) == 10 and date_str.count("-") == 2:
+                    data = r2_load(key)
+                    if include_in_date_list(date_str, data):
+                        found.append((date_str, content_signature(data)))
+        dates = save_date_index(found)
+        print(f"date index ready: {len(dates)}")
     except Exception as e:
-        print("scan dates error:", e)
+        print("rebuild date index error:", e)
+    finally:
+        date_index_lock.release()
 
-    kept = {}
-    for date_str, sig in found:
-        if sig not in kept or date_str < kept[sig]:
-            kept[sig] = date_str
-    return jsonify({"dates": sorted(kept.values(), reverse=True)})
+def touch_date_index(date, data):
+    with date_index_lock:
+        cached = r2_load(DATE_INDEX_KEY)
+        if not cached or "items" not in cached:
+            return
+        items = [(x["date"], x.get("sig", "")) for x in cached["items"] if x.get("date") and x["date"] != date]
+        if include_in_date_list(date, data):
+            items.append((date, content_signature(data)))
+        save_date_index(items)
+
+@app.route('/api/race-dates')
+def race_dates():
+    if _dates_mem["dates"] is not None and time.time() - _dates_mem["at"] < 300:
+        return jsonify({"dates": _dates_mem["dates"]})
+    cached = r2_load(DATE_INDEX_KEY)
+    if cached and cached.get("dates"):
+        _dates_mem["dates"] = cached["dates"]
+        _dates_mem["at"] = time.time()
+        return jsonify({"dates": cached["dates"]})
+    threading.Thread(target=rebuild_date_index, daemon=True).start()
+    return jsonify({"dates": list_day_filenames()})
 
 @app.route('/api/tag-rates')
 def tag_rates():
@@ -707,12 +773,12 @@ def manual_update_rates():
     if update_progress["running"]:
         return jsonify({"status": "already running", "progress": update_progress})
     threading.Thread(target=update_all_rates, daemon=True).start()
-    return jsonify({"status": "updating rates in background"})
+    return jsonify({"status": "automatic; started one now"})
 
 @app.route('/api/discover-dates')
 def manual_discover():
     threading.Thread(target=discover_new_race_days, daemon=True).start()
-    return jsonify({"status": "check today only"})
+    return jsonify({"status": "automatic every 5 minutes; started one now"})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
