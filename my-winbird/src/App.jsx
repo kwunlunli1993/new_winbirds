@@ -67,6 +67,7 @@ function App() {
     count: false,
     single: false,
     combo: false,
+    weight: false,
   })
 
   const topTableRef = useRef(null)
@@ -237,6 +238,17 @@ function App() {
       const valB = b[1][sortBy] || 0
       return sortDesc ? valB - valA : valA - valB
     })
+  }
+
+  const getWeightRows = () => {
+    if (!rates || !rates.stats) return []
+    const base = rates.baseline?.top3Rate ?? 26.9
+    return Object.entries(rates.stats).map(([tag, s]) => {
+      const n = s.total || 0
+      const gap = Math.round(((s.top3Rate || 0) - base) * 10) / 10
+      const weight = Math.round(gap * n / (n + 100) * 10) / 10
+      return { tag, n, top3Rate: s.top3Rate || 0, gap, weight }
+    }).sort((a, b) => b.weight - a.weight || b.n - a.n)
   }
 
   const getSortedCombos = () => {
@@ -632,6 +644,64 @@ function App() {
             <p style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
               1tag：該場每隻馬被多少個單 tag 命中（由多至少）；2tag：該場每隻馬被多少個雙 tag 組合命中（需先載入 2tags 統計）
             </p>
+          </div>
+        )}
+      </div>
+
+      <hr />
+
+      <div style={{ position: 'relative' }}>
+        <CollapseBtn id="weight" />
+        <h2 style={{ textAlign: 'center', color: '#000000', marginTop: 28 }}>權重表</h2>
+        {!collapsed.weight && (
+          <div style={{ marginBottom: 32, paddingLeft: 12, paddingRight: 12 }}>
+            <div style={{ marginBottom: 12, textAlign: 'center' }}>
+              {PERIODS.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => loadRates(p.id)}
+                  style={{ marginRight: 8, fontWeight: rates?.period === p.id ? 'bold' : 'normal' }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            {!rates || !rates.stats ? (
+              <p style={{ textAlign: 'center' }}>載入權重中...</p>
+            ) : (
+              <>
+                <p style={{ textAlign: 'center', margin: '8px 0' }}>
+                  統計期間：{rates.label}（{rates.start} ~ {rates.end}）
+                  <br />
+                  普通馬前三率 {rates.baseline?.top3Rate ?? 26.9}%（每匹馬只計一次）
+                </p>
+                <p style={{ textAlign: 'center', fontSize: 12, color: '#666', marginTop: 0 }}>
+                  權重 =（前三率 − 普通馬前三率）× 次數 ÷（次數 + 100）。正數高過普通馬，負數低過。15 個 tag 全部保留。
+                </p>
+                <div style={{ overflowX: 'auto' }}>
+                  <table cellPadding="6" style={{ borderCollapse: 'collapse', fontSize: 14, background: '#ffffff', border: '1px solid #000', margin: '0 auto' }}>
+                    <thead>
+                      <tr>
+                        {['Tag', '次數', '前三率', '差距', '權重'].map(h => (
+                          <th key={h} style={{ border: '1px solid #000', textAlign: 'center', whiteSpace: 'nowrap', background: '#f5f5f5' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {getWeightRows().map(row => (
+                        <tr key={row.tag}>
+                          <td style={{ border: '1px solid #000', textAlign: 'center', whiteSpace: 'nowrap' }}>{row.tag}</td>
+                          <td style={{ border: '1px solid #000', textAlign: 'center' }}>{row.n}</td>
+                          <td style={{ border: '1px solid #000', textAlign: 'center' }}>{row.top3Rate}%</td>
+                          <td style={{ border: '1px solid #000', textAlign: 'center', color: row.gap < 0 ? '#9b1c1c' : '#000' }}>{row.gap > 0 ? '+' : ''}{row.gap}</td>
+                          <td style={{ border: '1px solid #000', textAlign: 'center', fontWeight: 700, color: row.weight < 0 ? '#9b1c1c' : '#000' }}>{row.weight > 0 ? '+' : ''}{row.weight}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
