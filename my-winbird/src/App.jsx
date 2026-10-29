@@ -410,10 +410,34 @@ function App() {
       .sort((a, b) => b.count - a.count || a.no - b.no)
   }
 
-  const renderCountList = (items, race) => {
+  const getRaceWeights = (race) => {
+    if (!race || !race.tags || !rates || !rates.stats) return []
+    const weights = {}
+    getWeightRows().forEach(row => { weights[row.tag] = row.weight })
+    const horseTags = {}
+    Object.entries(race.tags).forEach(([tag, horses]) => {
+      if (weights[tag] == null) return
+      ;(horses || []).forEach(h => {
+        if (!h || !h.no) return
+        if (!horseTags[h.no]) horseTags[h.no] = new Set()
+        horseTags[h.no].add(tag)
+      })
+    })
+    return Object.entries(horseTags)
+      .map(([no, tags]) => {
+        let total = 0
+        tags.forEach(tag => { total += weights[tag] || 0 })
+        const rounded = Math.round(total * 10) / 10
+        const label = (rounded > 0 ? '+' : '') + rounded.toFixed(1)
+        return { no: parseInt(no), count: label, value: rounded }
+      })
+      .sort((a, b) => b.value - a.value || a.no - b.no)
+  }
+
+  const renderCountList = (items, race, wide) => {
     if (!items || items.length === 0) return <span style={{ color: '#999' }}>-</span>
     const placeMap = getPlaceMap(race)
-    const perLine = 4
+    const perLine = wide ? 2 : 4
     const lines = []
     for (let i = 0; i < items.length; i += perLine) {
       lines.push(items.slice(i, i + perLine))
@@ -431,7 +455,7 @@ function App() {
                   borderRadius: 2,
                   fontSize: 13,
                   fontWeight: 600,
-                  minWidth: 42,
+                  minWidth: wide ? 78 : 42,
                   textAlign: 'center',
                   display: 'inline-block',
                   lineHeight: '1.2',
@@ -623,6 +647,14 @@ function App() {
                 </thead>
                 <tbody>
                   <tr>
+                    <td style={{ border: '1px solid #000', textAlign: 'center', fontWeight: 'bold', background: '#f5f5f5' }}>權重</td>
+                    {races.map(race => (
+                      <td key={race.no} style={{ border: '1px solid #000', textAlign: 'center', padding: '4px', verticalAlign: 'top', width: 200 }}>
+                        {rates && rates.stats ? renderCountList(getRaceWeights(race), race, true) : <span style={{ color: '#999' }}>載入權重中</span>}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
                     <td style={{ border: '1px solid #000', textAlign: 'center', fontWeight: 'bold', background: '#f5f5f5' }}>1tag</td>
                     {races.map(race => (
                       <td key={race.no} style={{ border: '1px solid #000', textAlign: 'center', padding: '4px', verticalAlign: 'top', width: 200 }}>
@@ -642,7 +674,7 @@ function App() {
               </table>
             </div>
             <p style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-              1tag：該場每隻馬被多少個單 tag 命中（由多至少）；2tag：該場每隻馬被多少個雙 tag 組合命中（需先載入 2tags 統計）
+              權重：該場每隻馬所有 tag 權重加總，格式馬號(總分)，由高至低。1tag：該場每隻馬被多少個單 tag 命中（由多至少）；2tag：該場每隻馬被多少個雙 tag 組合命中（需先載入 2tags 統計）
             </p>
           </div>
         )}
