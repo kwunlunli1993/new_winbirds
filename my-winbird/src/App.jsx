@@ -32,6 +32,7 @@ const PLACE_SCORE = {
 
 const API_BASE = 'https://new-winbirds.onrender.com'
 
+// Fallback 如果 race-dates 空
 const FALLBACK_DATES = [
   "2026-10-26",
   "2026-10-21",
@@ -254,7 +255,7 @@ function App() {
 
   const getSortedCombos = () => {
     if (!allCombos || !allCombos.combos) return []
-    let filtered = allCombos.combos.filter(c =>
+    let filtered = allCombos.combos.filter(c => 
       shownTagsCombo.has(c.tag1) && shownTagsCombo.has(c.tag2)
     )
     return filtered.sort((a, b) => {
@@ -387,7 +388,7 @@ function App() {
     const countMap = {}
     DEFAULT_TAGS.forEach(tag => {
       if (!shownTagsSingle.has(tag)) return
-      ;(race.tags[tag] || []).forEach(h => {
+      (race.tags[tag] || []).forEach(h => {
         countMap[h.no] = (countMap[h.no] || 0) + 1
       })
     })
@@ -592,8 +593,8 @@ function App() {
           <h1 style={{ margin: 0, fontSize: '24px', color: '#000000' }}>楊超越！！</h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button onClick={goPrev} disabled={idx >= raceDates.length - 1 || datesLoading}>上一日</button>
-            <select
-              value={currentDate}
+            <select 
+              value={currentDate} 
               onChange={(e) => setCurrentDate(e.target.value)}
               disabled={datesLoading}
               style={{ margin: '0 8px', fontSize: 16, minWidth: 140 }}
@@ -615,9 +616,24 @@ function App() {
         {!collapsed.main && data && data.races && data.races.length > 0 && (
           <div style={{ marginBottom: 32, paddingLeft: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 8, paddingRight: 8 }}>
-              <button onClick={() => setTagSortMode("default")} style={{ fontWeight: tagSortMode === "default" ? 'bold' : 'normal' }}>默認排序</button>
-              <button onClick={() => setTagSortMode("score")} style={{ fontWeight: tagSortMode === "score" ? 'bold' : 'normal' }}>分數排序</button>
-              <button onClick={() => setTagSortMode("win")} style={{ fontWeight: tagSortMode === "win" ? 'bold' : 'normal' }}>獨贏排序</button>
+              <button 
+                onClick={() => setTagSortMode("default")}
+                style={{ fontWeight: tagSortMode === "default" ? 'bold' : 'normal' }}
+              >
+                默認排序
+              </button>
+              <button 
+                onClick={() => setTagSortMode("score")}
+                style={{ fontWeight: tagSortMode === "score" ? 'bold' : 'normal' }}
+              >
+                分數排序
+              </button>
+              <button 
+                onClick={() => setTagSortMode("win")}
+                style={{ fontWeight: tagSortMode === "win" ? 'bold' : 'normal' }}
+              >
+                獨贏排序
+              </button>
             </div>
             <div ref={topTableRef} style={{ overflowX: 'auto', userSelect: 'none' }}>
               <table cellPadding="6" style={{ borderCollapse: 'collapse', fontSize: 14, tableLayout: 'fixed', width: 'max-content', background: '#ffffff', border: '1px solid #000' }}>
@@ -641,7 +657,9 @@ function App() {
                       <td style={{ fontWeight: 'bold', position: 'sticky', left: 0, background: '#f5f5f5', textAlign: 'center', border: '1px solid #000', whiteSpace: 'nowrap' }}>
                         {tag}
                         {tagSortMode === "score" && (
-                          <div style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>{tagScores[tag] || 0}分</div>
+                          <div style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>
+                            {tagScores[tag] || 0}分
+                          </div>
                         )}
                         {tagSortMode === "win" && (
                           <div style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}>
@@ -737,9 +755,10 @@ function App() {
               const judged = races.map(race => ({ race, ...judgeRace(race) }))
               const ready = races.some(race => ['古惑飛', '指數哥', 'E類馬'].some(tag => (race.tags?.[tag] || []).length > 0))
               const picks = judged.filter(j => j.advice.label === '優先' || j.advice.label === '可看')
+              const placeOf = (race, no) => getPlaceMap(race)[no]
               const horseNo = (race, item) => {
                 if (!item) return '—'
-                const place = getPlaceMap(race)[item.no]
+                const place = placeOf(race, item.no)
                 return (
                   <span style={{ background: PLACE_COLORS[place] || 'transparent', padding: '1px 6px', fontWeight: 800, fontSize: 18 }}>
                     {item.no}
@@ -802,14 +821,14 @@ function App() {
             <p style={{ textAlign: 'center', fontSize: 14, marginTop: 0, lineHeight: 1.6 }}>
               推薦分 = 權重合計 − 有B就3 − 有D就3 − tag數10個或以上就4 + 有古惑飛而且tag數5至7又冇B/D就2
               <br />
-              每場由高至低排。頭3隻做3T，頭6隻做六寶。你自己決定買幾多隻。
+              每場由高至低排。頭3隻做六寶，再加3隻（即頭6隻）做3T。
             </p>
             {data && races.length > 0 && rates && rates.stats ? (() => {
               const judged = races.map(race => ({ race, ...judgeRace(race) }))
               const ready = races.some(race => ['古惑飛', '指數哥', 'E類馬'].some(tag => (race.tags?.[tag] || []).length > 0))
               const maxN = Math.max(0, ...judged.map(j => j.ranked.length))
               const rowBg = (rank) => rank <= 3 ? '#c8efd4' : rank <= 6 ? '#fff3c4' : '#ffffff'
-              const rowName = (rank) => rank <= 3 ? '3T' : rank <= 6 ? '六寶' : ''
+              const rowName = (rank) => rank <= 3 ? '六寶' : rank <= 6 ? '3T' : ''
               return (
                 <>
                   {!ready && (
@@ -857,7 +876,7 @@ function App() {
                       </tbody>
                     </table>
                   </div>
-                  <p style={{ fontSize: 12, color: '#666' }}>綠色頭3行 = 3T。黃色第4至6行 = 六寶。馬號有底色代表已跑完的名次。</p>
+                  <p style={{ fontSize: 12, color: '#666' }}>綠色頭3行 = 六寶。黃色第4至6行 = 3T再加的3隻。3T用頭6隻。馬號有底色代表已跑完的名次。</p>
                 </>
               )
             })() : (
@@ -934,18 +953,30 @@ function App() {
           <>
             <div style={{ marginBottom: 12, textAlign: 'center' }}>
               {PERIODS.map(p => (
-                <button key={p.id} onClick={() => loadRates(p.id)} style={{ marginRight: 8 }}>{p.label}</button>
+                <button 
+                  key={p.id} 
+                  onClick={() => loadRates(p.id)} 
+                  style={{ marginRight: 8 }}
+                >
+                  {p.label}
+                </button>
               ))}
             </div>
+
             {rates && (
               <div style={{ marginBottom: 32, paddingLeft: 12 }}>
                 <p style={{ textAlign: 'center' }}>統計期間：{rates.label}（{rates.start} ~ {rates.end}）</p>
+
                 <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900, position: 'relative' }}>
                   <strong>顯示以下 Tags：</strong>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
                     {sortedTagsForCheckboxes.map(tag => (
                       <label key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
-                        <input type="checkbox" checked={shownTagsSingle.has(tag)} onChange={() => toggleShownSingle(tag)} />
+                        <input 
+                          type="checkbox" 
+                          checked={shownTagsSingle.has(tag)} 
+                          onChange={() => toggleShownSingle(tag)} 
+                        />
                         {tag}
                       </label>
                     ))}
@@ -961,12 +992,28 @@ function App() {
                     </label>
                   </div>
                 </div>
+
                 <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 12 }}>
                   <div>
                     <span style={{ marginRight: 8 }}>排序：</span>
-                    <button onClick={() => handleSort('winRate')} style={{ marginRight: 4, fontWeight: sortBy === 'winRate' ? 'bold' : 'normal' }}>勝率 {sortBy === 'winRate' && (sortDesc ? '↓' : '↑')}</button>
-                    <button onClick={() => handleSort('top3Rate')} style={{ marginRight: 4, fontWeight: sortBy === 'top3Rate' ? 'bold' : 'normal' }}>前三率 {sortBy === 'top3Rate' && (sortDesc ? '↓' : '↑')}</button>
-                    <button onClick={() => handleSort('total')} style={{ fontWeight: sortBy === 'total' ? 'bold' : 'normal' }}>總數 {sortBy === 'total' && (sortDesc ? '↓' : '↑')}</button>
+                    <button 
+                      onClick={() => handleSort('winRate')} 
+                      style={{ marginRight: 4, fontWeight: sortBy === 'winRate' ? 'bold' : 'normal' }}
+                    >
+                      勝率 {sortBy === 'winRate' && (sortDesc ? '↓' : '↑')}
+                    </button>
+                    <button 
+                      onClick={() => handleSort('top3Rate')}
+                      style={{ marginRight: 4, fontWeight: sortBy === 'top3Rate' ? 'bold' : 'normal' }}
+                    >
+                      前三率 {sortBy === 'top3Rate' && (sortDesc ? '↓' : '↑')}
+                    </button>
+                    <button 
+                      onClick={() => handleSort('total')}
+                      style={{ fontWeight: sortBy === 'total' ? 'bold' : 'normal' }}
+                    >
+                      總數 {sortBy === 'total' && (sortDesc ? '↓' : '↑')}
+                    </button>
                   </div>
                   <label style={{ fontSize: 14 }}>
                     <input type="checkbox" checked={hideEmptySingle} onChange={() => setHideEmptySingle(!hideEmptySingle)} />
@@ -1022,9 +1069,9 @@ function App() {
           <>
             <div style={{ marginBottom: 12, textAlign: 'center' }}>
               {PERIODS.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => loadAllCombos(p.id)}
+                <button 
+                  key={p.id} 
+                  onClick={() => loadAllCombos(p.id)} 
                   disabled={comboLoading}
                   style={{ marginRight: 8, fontWeight: comboPeriod === p.id ? 'bold' : 'normal' }}
                 >
@@ -1033,15 +1080,21 @@ function App() {
               ))}
               {comboLoading && <span style={{ marginLeft: 8 }}>計算中...</span>}
             </div>
+
             {allCombos && (
               <div style={{ paddingLeft: 12 }}>
                 <p style={{ textAlign: 'center' }}>統計期間：{allCombos.label}（{allCombos.start} ~ {allCombos.end}）</p>
+                
                 <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, maxWidth: 900, position: 'relative' }}>
                   <strong>顯示包含以下 Tags 的組合：</strong>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
                     {sortedTagsForCheckboxes.map(tag => (
                       <label key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 14 }}>
-                        <input type="checkbox" checked={shownTagsCombo.has(tag)} onChange={() => toggleShownCombo(tag)} />
+                        <input 
+                          type="checkbox" 
+                          checked={shownTagsCombo.has(tag)} 
+                          onChange={() => toggleShownCombo(tag)} 
+                        />
                         {tag}
                       </label>
                     ))}
@@ -1057,12 +1110,28 @@ function App() {
                     </label>
                   </div>
                 </div>
+
                 <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 12 }}>
                   <div>
                     <span style={{ marginRight: 8 }}>排序：</span>
-                    <button onClick={() => handleComboSort('winRate')} style={{ marginRight: 4, fontWeight: comboSortBy === 'winRate' ? 'bold' : 'normal' }}>勝率 {comboSortBy === 'winRate' && (comboSortDesc ? '↓' : '↑')}</button>
-                    <button onClick={() => handleComboSort('top3Rate')} style={{ marginRight: 4, fontWeight: comboSortBy === 'top3Rate' ? 'bold' : 'normal' }}>前三率 {comboSortBy === 'top3Rate' && (comboSortDesc ? '↓' : '↑')}</button>
-                    <button onClick={() => handleComboSort('total')} style={{ fontWeight: comboSortBy === 'total' ? 'bold' : 'normal' }}>總數 {comboSortBy === 'total' && (comboSortDesc ? '↓' : '↑')}</button>
+                    <button 
+                      onClick={() => handleComboSort('winRate')} 
+                      style={{ marginRight: 4, fontWeight: comboSortBy === 'winRate' ? 'bold' : 'normal' }}
+                    >
+                      勝率 {comboSortBy === 'winRate' && (comboSortDesc ? '↓' : '↑')}
+                    </button>
+                    <button 
+                      onClick={() => handleComboSort('top3Rate')}
+                      style={{ marginRight: 4, fontWeight: comboSortBy === 'top3Rate' ? 'bold' : 'normal' }}
+                    >
+                      前三率 {comboSortBy === 'top3Rate' && (comboSortDesc ? '↓' : '↑')}
+                    </button>
+                    <button 
+                      onClick={() => handleComboSort('total')}
+                      style={{ fontWeight: comboSortBy === 'total' ? 'bold' : 'normal' }}
+                    >
+                      總數 {comboSortBy === 'total' && (comboSortDesc ? '↓' : '↑')}
+                    </button>
                   </div>
                   <label style={{ fontSize: 14 }}>
                     <input type="checkbox" checked={hideEmptyCombo} onChange={() => setHideEmptyCombo(!hideEmptyCombo)} />
@@ -1103,7 +1172,9 @@ function App() {
                     </tbody>
                   </table>
                 </div>
-                <p style={{ fontSize: 13, color: '#666' }}>顯示 {filteredCombos.length} 個組合</p>
+                <p style={{ fontSize: 13, color: '#666' }}>
+                  顯示 {filteredCombos.length} 個組合
+                </p>
               </div>
             )}
           </>
