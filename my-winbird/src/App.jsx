@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useState, useEffect, useRef } from 'react'
 
 document.documentElement.style.colorScheme = 'light'
@@ -70,6 +71,7 @@ function App() {
     single: false,
     combo: false,
     weight: false,
+    bets: false,
   })
 
   const topTableRef = useRef(null)
@@ -493,6 +495,20 @@ function App() {
     return { ranked, top, second, advice: adviseHorse(top, second) }
   }
 
+  const pickTicket = (ranked) => {
+    const top6 = (ranked || []).slice(0, 6)
+    const clean = top6.filter(h => {
+      const tags = new Set(h.tags || [])
+      return !tags.has('B類馬') && !tags.has('D類馬')
+    })
+    if (top6.length > 0 && clean.length === 0) {
+      return { banker: null, legs: [], skipped: true }
+    }
+    const banker = clean[0] || null
+    const legs = top6.filter(h => banker && h.no !== banker.no)
+    return { banker, legs, skipped: false }
+  }
+
   const renderCountList = (items, race, wide) => {
     if (!items || items.length === 0) return <span style={{ color: '#999' }}>-</span>
     const placeMap = getPlaceMap(race)
@@ -821,10 +837,17 @@ function App() {
             <p style={{ textAlign: 'center', fontSize: 14, marginTop: 0, lineHeight: 1.6 }}>
               推薦分 = 權重合計 − 有B就3 − 有D就3 − tag數10個或以上就4 + 有古惑飛而且tag數5至7又冇B/D就2
               <br />
-              每場由高至低排。頭3隻做六寶，再加3隻（即頭6隻）做3T。
+              每場由高至低排。頭6名入面，冇B／D而且分數最高的做馬膽，其餘5隻做腳。
+              <br />
+              頭6隻都有B／D就放棄嗰場，唔買。
+              <br />
+              頭3隻做六寶，再加3隻（即頭6隻）做3T。
             </p>
             {data && races.length > 0 && rates && rates.stats ? (() => {
-              const judged = races.map(race => ({ race, ...judgeRace(race) }))
+              const judged = races.map(race => {
+                const judgedRace = judgeRace(race)
+                return { race, ...judgedRace, ticket: pickTicket(judgedRace.ranked) }
+              })
               const ready = races.some(race => ['古惑飛', '指數哥', 'E類馬'].some(tag => (race.tags?.[tag] || []).length > 0))
               const maxN = Math.max(0, ...judged.map(j => j.ranked.length))
               const rowBg = (rank) => rank <= 3 ? '#c8efd4' : rank <= 6 ? '#fff3c4' : '#ffffff'
@@ -842,7 +865,10 @@ function App() {
                         <tr>
                           <th style={{ border: '1px solid #000', background: '#f5f5f5', position: 'sticky', left: 0, zIndex: 1, minWidth: 72 }}>排名</th>
                           {judged.map(j => (
-                            <th key={j.race.no} style={{ border: '1px solid #000', background: '#f5f5f5', minWidth: 72, whiteSpace: 'nowrap' }}>第{j.race.no}場</th>
+                            <th key={j.race.no} style={{ border: '1px solid #000', background: j.ticket.skipped ? '#d0d0d0' : '#f5f5f5', minWidth: 72, whiteSpace: 'nowrap' }}>
+                              第{j.race.no}場
+                              {j.ticket.skipped ? <div style={{ color: '#9b1c1c' }}>放棄</div> : null}
+                            </th>
                           ))}
                         </tr>
                       </thead>
@@ -855,15 +881,17 @@ function App() {
                             {judged.map(j => {
                               const horse = j.ranked[rank - 1]
                               const place = horse ? getPlaceMap(j.race)[horse.no] : 0
+                              const isBanker = horse && j.ticket.banker && horse.no === j.ticket.banker.no
                               return (
-                                <td key={j.race.no} style={{ border: '1px solid #000', textAlign: 'center', background: rowBg(rank), verticalAlign: 'middle' }}>
+                                <td key={j.race.no} style={{ border: '1px solid #000', textAlign: 'center', background: j.ticket.skipped ? '#eeeeee' : rowBg(rank), verticalAlign: 'middle' }}>
                                   {horse ? (
                                     <div>
                                       <span style={{
                                         background: PLACE_COLORS[place] || 'transparent',
                                         padding: '0 4px',
                                         fontWeight: 800,
-                                        fontSize: 16
+                                        fontSize: 16,
+                                        ...(isBanker ? { display: 'inline-block', border: '3px solid #e10600', lineHeight: 1.2 } : {})
                                       }}>{horse.no}</span>
                                       <div style={{ fontSize: 12, color: '#333' }}>{horse.score > 0 ? '+' : ''}{horse.score.toFixed(1)}</div>
                                     </div>
@@ -876,7 +904,51 @@ function App() {
                       </tbody>
                     </table>
                   </div>
-                  <p style={{ fontSize: 12, color: '#666' }}>綠色頭3行 = 六寶。黃色第4至6行 = 3T再加的3隻。3T用頭6隻。馬號有底色代表已跑完的名次。</p>
+                  <p style={{ fontSize: 12, color: '#666' }}>綠色頭3行 = 六寶。黃色第4至6行 = 3T再加的3隻。紅色粗框 = 頭6名入面最高、又冇B／D的馬膽。灰色「放棄」= 頭6隻都有B／D，唔買。馬號有底色代表已跑完的名次。</p>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      const lines = judged.map(j => {
+                        if (j.ticket.skipped) return `第${j.race.no}場　放棄`
+                        const banker = j.ticket.banker
+                        if (!banker) return `第${j.race.no}場　未有馬`
+                        const placeOf = getPlaceMap(j.race)
+                        const mark = (no) => {
+                          const place = Number(placeOf[no])
+                          return `${no}${place >= 1 && place <= 3 ? '✅' : ''}`
+                        }
+                        const legs = j.ticket.legs.map(h => mark(h.no)).join(',')
+                        return `第${j.race.no}場　膽${mark(banker.no)}　腳${legs}`
+                      })
+                      const text = `${currentDate} 湯馬推薦 🏇\n\n${lines.join('\n\n')}`
+                      const btn = e.currentTarget
+                      const old = btn.textContent
+                      const flash = () => {
+                        btn.textContent = '已複製'
+                        setTimeout(() => { btn.textContent = old }, 1500)
+                      }
+                      const fallback = () => {
+                        const ta = document.createElement('textarea')
+                        ta.value = text
+                        document.body.appendChild(ta)
+                        ta.select()
+                        document.execCommand('copy')
+                        document.body.removeChild(ta)
+                        flash()
+                      }
+                      if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(text).then(flash).catch(fallback)
+                      } else {
+                        fallback()
+                      }
+                    }}
+                    style={{ display: 'block', margin: '12px auto 0', padding: '8px 16px', fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    複製今場 1膽5腳
+                  </button>
+                  <p style={{ textAlign: 'center', fontSize: 12, color: '#666' }}>
+                    撳一下就複製，去 WhatsApp 自己貼上。
+                  </p>
                 </>
               )
             })() : (
@@ -1179,6 +1251,81 @@ function App() {
             )}
           </>
         )}
+      </div>
+
+      <hr />
+
+      <div style={{ position: 'relative' }}>
+        <CollapseBtn id="bets" />
+        <h2 style={{ textAlign: 'center', color: '#000000', marginTop: 28 }}>注碼成績</h2>
+        {!collapsed.bets && (() => {
+          const money = (n) => Math.round(n).toLocaleString('en-HK')
+          const hitText = (r) => r.mid
+          const renderBetTable = (title, rows) => (
+            <table cellPadding="6" style={{ borderCollapse: 'collapse', fontSize: 14, background: '#ffffff', border: '1px solid #000', margin: '0 auto 16px' }}>
+              <thead>
+                <tr>
+                  <th style={{ border: '1px solid #000', background: '#fff3c4', textAlign: 'left', whiteSpace: 'nowrap' }}>{title}</th>
+                  {['中', '成本', '派彩', '輸贏'].map(h => (
+                    <th key={h} style={{ border: '1px solid #000', background: '#f5f5f5', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.pool}>
+                    <td style={{ border: '1px solid #000', textAlign: 'center', fontWeight: 700 }}>{r.pool}</td>
+                    <td style={{ border: '1px solid #000', textAlign: 'center' }}>{hitText(r)}</td>
+                    <td style={{ border: '1px solid #000', textAlign: 'right' }}>${money(r.cost)}</td>
+                    <td style={{ border: '1px solid #000', textAlign: 'right' }}>${money(r.div)}</td>
+                    <td style={{ border: '1px solid #000', textAlign: 'right', fontWeight: 700, color: r.profit >= 0 ? '#0a7a2f' : '#9b1c1c' }}>
+                      {r.profit >= 0 ? '賺' : '蝕'} ${money(Math.abs(r.profit))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
+          const mixedRows = [
+            { pool: '獨贏', mid: '37／141', cost: 1410, div: 1778.5, profit: 368.5 },
+            { pool: '位置', mid: '81／141', cost: 1410, div: 1557.7, profit: 147.7 },
+            { pool: '單T', mid: '42／141', cost: 14100, div: 17355, profit: 3255 },
+            { pool: '三重彩', mid: '18／141', cost: 28200, div: 35634, profit: 7434 },
+            { pool: '孖T', mid: '6／43 口', cost: 43000, div: 152375, profit: 109375 },
+            { pool: '三T', mid: '1／15 口', cost: 150000, div: 404526, profit: 254526 },
+          ]
+          const seasonRows = [
+            { pool: '獨贏', mid: '37／141', cost: 1410, div: 1766, profit: 356 },
+            { pool: '位置', mid: '77／141', cost: 1410, div: 1461.7, profit: 51.7 },
+            { pool: '單T', mid: '40／141', cost: 14100, div: 16218, profit: 2118 },
+            { pool: '三重彩', mid: '17／141', cost: 28200, div: 37981, profit: 9781 },
+            { pool: '孖T', mid: '5／43 口', cost: 43000, div: 59053, profit: 16053 },
+            { pool: '三T', mid: '0／15 口', cost: 150000, div: 7500, profit: -142500 },
+          ]
+          const sameRows = [
+            { pool: '獨贏', mid: '20／80', cost: 800, div: 893.5, profit: 93.5 },
+            { pool: '位置', mid: '47／80', cost: 800, div: 893.6, profit: 93.6 },
+            { pool: '單T', mid: '25／80', cost: 8000, div: 8972, profit: 972 },
+            { pool: '三重彩', mid: '10／80', cost: 16000, div: 16179, profit: 179 },
+            { pool: '孖T', mid: '2／12 口', cost: 12000, div: 42832, profit: 30832 },
+            { pool: '三T', mid: '0／1 口', cost: 10000, div: 0, profit: -10000 },
+          ]
+          return (
+            <div style={{ marginBottom: 32, paddingLeft: 12, paddingRight: 12 }}>
+              <p style={{ textAlign: 'center', margin: '8px 0' }}>
+                三張都係 2026年9月6日至10月28日，15 個賽馬日、141 場。馬匹 tag 一樣，只係權重唔同。
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 24 }}>
+                {renderBetTable('權重：2025年9月至今', mixedRows)}
+                {renderBetTable('權重：2026年9月至今', seasonRows)}
+                {renderBetTable('兩套權重膽腳相同', sameRows)}
+              </div>
+              <p style={{ textAlign: 'center', fontSize: 12, color: '#666' }}>
+                三T 是 15 個賽馬日各一口。冇人中頭獎的日子，用該三場的頭三名對。兩套權重三場膽腳都一樣先買，今季只有 10 月 11 日一口，中唔到。
+              </p>
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
